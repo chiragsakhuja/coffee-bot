@@ -1,0 +1,54 @@
+{
+  "title": "Coffee Menu",
+  "coffees": [
+    {
+      "id": "onyx-southern-weather",
+      "roaster": "Onyx Coffee Lab",
+      "name": "Southern Weather",
+      "roast_date": "2026-09-12",
+      "container": "black",
+      "tasting_notes": ["milk chocolate", "caramel", "citrus"],
+      "origin": "Colombia / Ethiopia",
+      "process": "Washed",
+      "roast_level": "Medium",
+      "brew_methods": [
+        {"method": "Espresso", "status": "dialed", "dose_g": 18, "yield_g": 38, "grind": "2.4", "temp_c": 93, "time": "28s", "notes": "Sweet and round. Slightly longer ratio tames the acidity."},
+        {"method": "V60", "status": "dialing_in", "dose_g": 15, "water_g": 250, "ratio": "1:16.7", "grind": "22 clicks", "temp_c": 96, "time": "3:00", "params": {"bloom": "45g / 45s"}, "notes": "A touch bitter, try coarser next."}
+      ]
+    },
+    {
+      "id": "sey-gesha",
+      "roaster": "Sey",
+      "name": "Gesha Village Lot 24",
+      "roast_date": "2026-09-20",
+      "container": "white",
+      "tasting_notes": ["jasmine", "bergamot", "peach"],
+      "origin": "Ethiopia",
+      "process": "Natural",
+      "brew_methods": [
+        {"method": "Orea", "status": "trying", "dose_g": 16, "water_g": 260, "grind": "fine-medium", "temp_c": 98, "params": {"pours": "4 x 65g"}}
+      ]
+    },
+    {
+      "id": "heart-stereo",
+      "roaster": "Heart",
+      "name": "Stereo Blend",
+      "roast_date": "2026-09-05",
+      "container": "blue",
+      "tasting_notes": ["cocoa", "cherry", "brown sugar"],
+      "brew_methods": [
+        {"method": "AeroPress", "status": "dialed", "dose_g": 17, "water_g": 220, "temp_c": 90, "time": "2:00", "params": {"method": "inverted"}}
+      ]
+    },
+    {
+      "id": "proud-mary-huila",
+      "roaster": "Proud Mary",
+      "name": "Huila Decaf",
+      "roast_date": "2026-09-18",
+      "container": "green",
+      "tasting_notes": ["toffee", "red apple"],
+      "process": "Sugarcane EA",
+      "brew_methods": []
+    }
+  ]
+}

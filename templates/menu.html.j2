@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+{% include "menu.css" %}
+</style>
+</head>
+{#- Available: menu (Menu model), today (date), width/height (800x480). Filters: short_date, num. -#}
+{%- set status_label = {"dialed": "DIALED", "dialing_in": "DIALING IN", "trying": "TRYING"} -%}
+<body>
+<div class="screen" style="width: {{ width }}px; height: {{ height }}px;">
+  <header class="topbar">
+    <div class="title">{{ menu.title }}</div>
+    <div class="today">{{ today.strftime("%a") }} {{ today | short_date }}</div>
+  </header>
+
+  {%- if not menu.coffees %}
+  <main class="empty">
+    <div>No coffees on the menu yet.</div>
+    <div class="hint">Send a photo of a bag to the bot.</div>
+  </main>
+  {%- else %}
+  <main class="grid count-{{ menu.coffees | length }}">
+    {%- for c in menu.coffees %}
+    {%- set age = (today - c.roast_date).days %}
+    <section class="card">
+      <div class="card-head">
+        <div class="container-tag">
+          <span class="swatch swatch-{{ c.container }}"></span>
+          <span class="container-label">{{ c.container | upper }}</span>
+        </div>
+        <div class="roaster">{{ c.roaster }}</div>
+      </div>
+      <div class="name">{{ c.name }}</div>
+      <div class="meta">
+        {%- set bits = [] %}
+        {%- if c.origin %}{% set _ = bits.append(c.origin) %}{% endif %}
+        {%- if c.process %}{% set _ = bits.append(c.process) %}{% endif %}
+        {%- if c.roast_level %}{% set _ = bits.append(c.roast_level) %}{% endif %}
+        {%- if bits %}<span>{{ bits | join(" · ") }}</span>{% endif %}
+        <span class="roasted">Roasted {{ c.roast_date | short_date }} · {{ age }}d</span>
+      </div>
+      {%- if c.tasting_notes %}
+      <div class="notes">{{ c.tasting_notes | join(", ") }}</div>
+      {%- endif %}
+
+      <div class="brews">
+        {%- for b in c.brew_methods %}
+        <div class="brew">
+          <div class="brew-head">
+            <span class="method">{{ b.method }}</span>
+            <span class="status status-{{ b.status }}">{{ status_label[b.status] }}</span>
+          </div>
+          {%- set p = [] %}
+          {%- if b.dose_g is not none and (b.yield_g is not none or b.water_g is not none) %}
+            {%- set _ = p.append((b.dose_g | num) ~ "g → " ~ ((b.yield_g if b.yield_g is not none else b.water_g) | num) ~ "g") %}
+          {%- elif b.dose_g is not none %}{% set _ = p.append((b.dose_g | num) ~ "g") %}
+          {%- endif %}
+          {%- if b.ratio %}{% set _ = p.append(b.ratio) %}{% endif %}
+          {%- if b.grind %}{% set _ = p.append("grind " ~ b.grind) %}{% endif %}
+          {%- if b.temp_c is not none %}{% set _ = p.append((b.temp_c | num) ~ "°C") %}{% endif %}
+          {%- if b.time %}{% set _ = p.append(b.time) %}{% endif %}
+          {%- for k, v in b.params.items() %}{% set _ = p.append(k ~ ": " ~ v) %}{% endfor %}
+          {%- if p %}<div class="params">{{ p | join(" · ") }}</div>{% endif %}
+          {%- if b.notes %}<div class="brew-notes">{{ b.notes }}</div>{% endif %}
+        </div>
+        {%- else %}
+        <div class="brew empty-brew">No recipe yet</div>
+        {%- endfor %}
+      </div>
+    </section>
+    {%- endfor %}
+  </main>
+  {%- endif %}
+</div>
+</body>
+</html>

@@ -1,0 +1,145 @@
+/* TRMNL OG in 2-bit mode shows exactly four grays. Stick to these so nothing gets snapped
+   to an unexpected level:  #000  #555  #aaa  #fff  */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: #fff;
+  color: #000;
+  font-family: "Inter", "Helvetica Neue", "DejaVu Sans", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 10px 12px 12px;
+  gap: 8px;
+}
+
+/* ---- top bar ---- */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 3px solid #000;
+  padding-bottom: 4px;
+}
+.title { font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
+.today { font-size: 16px; font-weight: 600; }
+
+/* ---- empty state ---- */
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 700;
+  gap: 8px;
+}
+.empty .hint { font-size: 18px; font-weight: 400; color: #555; }
+
+/* ---- card grid: layout adapts to 1-4 coffees ---- */
+.grid { flex: 1; display: grid; gap: 10px; min-height: 0; }
+.grid.count-1 { grid-template-columns: 1fr; }
+.grid.count-2 { grid-template-columns: 1fr 1fr; }
+.grid.count-3 { grid-template-columns: 1fr 1fr 1fr; }
+.grid.count-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
+.card {
+  border: 2px solid #000;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.roaster {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  order: -1;
+}
+.name { font-size: 21px; font-weight: 800; line-height: 1.1; }
+.meta { font-size: 12px; color: #000; display: flex; flex-wrap: wrap; gap: 0 10px; }
+.roasted { font-weight: 700; }
+.notes { font-size: 14px; font-style: italic; line-height: 1.2; }
+
+/* ---- container indicator: label + swatch that stays distinct in 4 grays ---- */
+.container-tag { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.container-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; }
+.swatch { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #000; display: inline-block; }
+.swatch-black { background: #000; }
+.swatch-blue  { background: #555; }
+.swatch-green { background: #aaa; }
+.swatch-white { background: #fff; }
+
+/* ---- brew methods ---- */
+.brews {
+  margin-top: 4px;
+  border-top: 1px solid #000;
+  padding-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0;
+  overflow: hidden;
+}
+.brew-head { display: flex; align-items: center; gap: 6px; }
+.method { font-size: 15px; font-weight: 800; }
+.status {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1.5px solid #000;
+}
+.status-dialed { background: #000; color: #fff; }
+.status-dialing_in { background: #fff; color: #000; }
+.status-trying { background: #fff; color: #000; border-style: dashed; }
+.params { font-size: 13px; font-weight: 600; line-height: 1.2; }
+.brew-notes {
+  font-size: 12px;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.empty-brew { font-size: 12px; font-style: italic; color: #555; }
+
+/* ---- roomier type when there are fewer coffees ---- */
+.count-1 .name { font-size: 34px; }
+.count-1 .roaster { font-size: 17px; }
+.count-1 .meta { font-size: 15px; }
+.count-1 .notes { font-size: 20px; }
+.count-1 .brews { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; align-content: start; }
+.count-1 .method { font-size: 19px; }
+.count-1 .params { font-size: 16px; }
+.count-1 .brew-notes { font-size: 14px; -webkit-line-clamp: 3; }
+
+.count-2 .name { font-size: 26px; }
+.count-2 .notes { font-size: 16px; }
+.count-2 .method { font-size: 17px; }
+.count-2 .params { font-size: 14px; }
+.count-2 .brew-notes { font-size: 13px; -webkit-line-clamp: 3; }
+
+.count-4 .card { padding: 6px 9px; gap: 2px; }
+.count-4 .name { font-size: 18px; }
+.count-4 .notes { font-size: 12px; }
+.count-4 .brews { flex-direction: row; flex-wrap: wrap; gap: 3px 14px; }
+.count-4 .method { font-size: 13px; }
+.count-4 .params { font-size: 11px; }
+.count-4 .brew-notes { display: none; }

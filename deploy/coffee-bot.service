@@ -1,0 +1,32 @@
+[Unit]
+Description=Coffee Bot (Telegram -> Claude -> TRMNL coffee menu)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=coffeebot
+Group=coffeebot
+WorkingDirectory=/opt/coffee-bot
+EnvironmentFile=/opt/coffee-bot/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/coffee-bot
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/coffee-bot/.playwright
+ExecStart=/opt/coffee-bot/.venv/bin/python -m coffee_bot
+Restart=on-failure
+RestartSec=10
+
+# Creates /var/lib/coffee-bot owned by the service user (DATA_DIR / OUTPUT_DIR live here).
+StateDirectory=coffee-bot
+StateDirectoryMode=0755
+
+# Hardening. The filesystem is read-only except the paths below, which also limits what
+# approved shell commands can touch. Loosen ReadWritePaths if you want the bot to do more.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/coffee-bot /opt/coffee-bot/templates
+
+[Install]
+WantedBy=multi-user.target
