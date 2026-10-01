@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import struct
 import zlib
-from dataclasses import dataclass
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -26,10 +28,51 @@ PNG_1BIT = "menu-1bit.png"
 BMP_1BIT = "menu-1bit.bmp"
 
 
+# TRMNL OG has no PSRAM; the firmware rejects images larger than this.
+MAX_DEVICE_IMAGE_BYTES = 90_000
+
+
+@dataclass(frozen=True)
+class CachedImage:
+    filename: str  # unique per content: the device uses it as a cache key (keep <= 31 chars)
+    data: bytes
+    content_type: str
+
+
+def cached_image(prefix: str, suffix: str, data: bytes, content_type: str) -> CachedImage:
+    digest = hashlib.sha1(data).hexdigest()[:10]
+    return CachedImage(f"{prefix}-{digest}-{suffix}", data, content_type)
+
+
+class ImageCache:
+    """Recent images by filename, so devices can fetch what /api/display pointed them at."""
+
+    def __init__(self, keep: int = 16):
+        self.keep = keep
+        self.latest: dict[str, CachedImage] = {}  # variant ("2bit" | "1bit" | "bmp") -> image
+        self._by_name: OrderedDict[str, CachedImage] = OrderedDict()
+
+    def put(self, image: CachedImage) -> CachedImage:
+        self._by_name[image.filename] = image
+        self._by_name.move_to_end(image.filename)
+        while len(self._by_name) > self.keep:
+            self._by_name.popitem(last=False)
+        return image
+
+    def publish(self, variants: dict[str, CachedImage]) -> None:
+        for image in variants.values():
+            self.put(image)
+        self.latest = dict(variants)
+
+    def get(self, filename: str) -> CachedImage | None:
+        return self._by_name.get(filename)
+
+
 @dataclass
 class RenderResult:
     preview_png: bytes  # 8-bit grayscale PNG of the 4-level image, for sending to Telegram
     paths: list[Path]
+    images: dict[str, CachedImage] = field(default_factory=dict)
 
 
 def quantize_4gray(img: Image.Image) -> Image.Image:
@@ -98,6 +141,8 @@ class Renderer:
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._lock = asyncio.Lock()
+        self.cache = ImageCache()
+        self._messages: dict[tuple[str, str], CachedImage] = {}
 
     async def start(self) -> None:
         if self._browser is None:
@@ -136,11 +181,30 @@ class Renderer:
             gray = quantize_4gray(shot)
             mono = to_1bit(gray)
 
+            variants = {
+                "2bit": cached_image("menu", "2b.png", encode_png_gray2(gray), "image/png"),
+                "1bit": cached_image("menu", "1b.png", _png_bytes(mono), "image/png"),
+                "bmp": cached_image("menu", "1b.bmp", _png_bytes(mono, "BMP"), "image/bmp"),
+            }
             outputs = {
-                self.output_dir / PNG_2BIT: encode_png_gray2(gray),
-                self.output_dir / PNG_1BIT: _png_bytes(mono),
-                self.output_dir / BMP_1BIT: _png_bytes(mono, "BMP"),
+                self.output_dir / PNG_2BIT: variants["2bit"].data,
+                self.output_dir / PNG_1BIT: variants["1bit"].data,
+                self.output_dir / BMP_1BIT: variants["bmp"].data,
             }
             for path, data in outputs.items():
                 atomic_write_bytes(path, data)
-            return RenderResult(preview_png=_png_bytes(gray), paths=list(outputs))
+            self.cache.publish(variants)
+            return RenderResult(preview_png=_png_bytes(gray), paths=list(outputs), images=variants)
+
+    async def render_message(self, title: str, body: str) -> CachedImage:
+        """Render a simple full-screen notice (pairing, errors) as a 1-bit PNG, cached by text."""
+        key = (title, body)
+        if key not in self._messages:
+            async with self._lock:
+                html = self._env.get_template("message.html.j2").render(
+                    title=title, body=body, width=WIDTH, height=HEIGHT
+                )
+                shot = await self.screenshot(html)
+            image = cached_image("msg", "1b.png", _png_bytes(to_1bit(quantize_4gray(shot))), "image/png")
+            self._messages[key] = image
+        return self.cache.put(self._messages[key])

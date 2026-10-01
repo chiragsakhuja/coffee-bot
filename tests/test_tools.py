@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from coffee_bot.config import TEMPLATES_DIR
+from coffee_bot.devices import DeviceRegistry
 from coffee_bot.sandbox import Sandbox
 from coffee_bot.store import MenuStore
 from coffee_bot.tools import Services, build_tools
@@ -40,6 +41,7 @@ def env(tmp_path):
         renderer=FakeRenderer(),
         sandbox=Sandbox(tmp_path, (tmp_path / "templates", tmp_path / "data"), (tmp_path / "templates",)),
         tz=ZoneInfo("UTC"),
+        devices=DeviceRegistry(tmp_path / "data"),
     )
     chat = FakeChat()
     tools = {t.name: t for t in build_tools(svc, chat)}
@@ -92,3 +94,24 @@ async def test_shell_requires_approval(env):
     chat.approve = True
     out = await call(tools, "run_shell_command", command="echo ok", reason="test")
     assert "ok" in out and chat.approvals == ["touch should-not-exist", "echo ok"]
+
+
+async def test_set_refresh_schedule(env):
+    svc, chat, tools = env
+    out = await call(tools, "set_refresh_schedule", refresh_minutes=30, night_enabled=True, night_end="6:30")
+    assert "30 min" in out and "06:30" in out
+    assert svc.devices.settings.refresh_minutes == 30
+    # persisted
+    assert DeviceRegistry(svc.devices.path.parent).settings.night_end == "06:30"
+    with pytest.raises(ValueError):
+        await call(tools, "set_refresh_schedule", refresh_minutes=1)
+    with pytest.raises(ValueError):
+        await call(tools, "set_refresh_schedule", night_start="25:00")
+    assert svc.devices.settings.refresh_minutes == 30
+
+
+async def test_get_device_status(env):
+    svc, chat, tools = env
+    assert "No TRMNL devices" in await call(tools, "get_device_status")
+    svc.devices.add_pending("aa:bb:cc:dd:ee:ff")
+    assert "AA:BB:CC:DD:EE:FF" in await call(tools, "get_device_status")

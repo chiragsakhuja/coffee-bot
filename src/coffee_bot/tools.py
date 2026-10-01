@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from anthropic import beta_async_tool
 from pydantic import ValidationError
 
+from .devices import DeviceRegistry, DeviceSettings, format_status
 from .models import MAX_COFFEES, BrewMethod, Coffee, Menu, now_utc
 from .render import Renderer, RenderResult
 from .sandbox import MAX_FILE_BYTES, Sandbox, run_command
@@ -36,6 +37,7 @@ class Services:
     renderer: Renderer
     sandbox: Sandbox
     tz: ZoneInfo
+    devices: DeviceRegistry
     menu_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def today(self) -> date:
@@ -362,8 +364,44 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
             return "The user declined (or didn't answer in time). The command was not run."
         return await run_command(command, cwd=svc.sandbox.project_root)
 
+    @beta_async_tool
+    async def get_device_status() -> str:
+        """Status of the TRMNL display(s): last check-in, battery, Wi-Fi signal, firmware, recent device
+        logs, and the current refresh schedule."""
+        return format_status(svc.devices, svc.tz)
+
+    @beta_async_tool
+    async def set_refresh_schedule(
+        refresh_minutes: int | None = None,
+        night_enabled: bool | None = None,
+        night_start: str | None = None,
+        night_end: str | None = None,
+    ) -> str:
+        """Change how often the TRMNL display wakes up to fetch the menu, and the overnight sleep window.
+        Only the fields you pass are changed. Changes apply at the device's next wake-up.
+
+        Args:
+            refresh_minutes: Minutes between refreshes during the day (5-1440). Longer saves battery.
+            night_enabled: Turn the overnight sleep window on or off. While it's on, the device sleeps
+                from night_start until night_end with a single wake-up at night_end.
+            night_start: Start of the night window, 24h "HH:MM" local time, e.g. "23:00".
+            night_end: End of the night window, 24h "HH:MM" local time, e.g. "06:30".
+        """
+        async with svc.devices.lock:
+            current = svc.devices.settings.model_dump()
+            updates = {"refresh_minutes": refresh_minutes, "night_enabled": night_enabled,
+                       "night_start": night_start, "night_end": night_end}
+            current.update({k: v for k, v in updates.items() if v is not None})
+            try:
+                svc.devices.state.settings = DeviceSettings.model_validate(current)
+            except ValidationError as exc:
+                raise ValueError(_validation_message(exc)) from None
+            svc.devices.save()
+        return f"{svc.devices.settings.describe()}. Takes effect at the display's next wake-up."
+
     return [
         get_menu, add_coffee, update_coffee, remove_coffee, upsert_brew_method, remove_brew_method,
         set_menu_title, render_preview, list_files, read_file, write_file, run_shell_command,
+        get_device_status, set_refresh_schedule,
     ]
 

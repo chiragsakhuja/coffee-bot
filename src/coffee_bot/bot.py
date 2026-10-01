@@ -25,7 +25,9 @@ from telegram.ext import (
 )
 
 from .agent import CoffeeAgent
+from .devices import Device, format_status
 from .render import PNG_2BIT
+from .server import DeviceServer
 from .tools import Services
 
 log = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ BOT_COMMANDS = [
     ("menu", "Show the current display image"),
     ("new", "Start a fresh conversation"),
     ("undo", "Revert the last menu change"),
+    ("device", "TRMNL status: battery, Wi-Fi, last check-in"),
     ("help", "What can this bot do?"),
 ]
 
@@ -49,7 +52,8 @@ HELP_TEXT = (
     "and I'll add it to the menu. Send brew recipes or dial-in notes, e.g. \"V60 on the Onyx: 15g in, "
     "250g out, 22 clicks, 3:00, a bit sour\", and I'll update the brew methods. You can also ask me "
     "to change the layout of the display.\n\n"
-    "/menu shows the current image\n/new starts a fresh conversation\n/undo reverts the last menu change"
+    "/menu shows the current image\n/new starts a fresh conversation\n/undo reverts the last menu change\n"
+    "/device shows the TRMNL's battery, Wi-Fi and last check-in"
 )
 
 
@@ -112,11 +116,42 @@ def _prepare_image(data: bytes, media_type: str) -> tuple[bytes, str]:
         return buf.getvalue(), "image/jpeg"
 
 
+def _pairing_keyboard(device: Device) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("✅ Approve", callback_data=f"pair:{device.friendly_id}:yes"),
+            InlineKeyboardButton("❌ Deny", callback_data=f"pair:{device.friendly_id}:no"),
+        ]]
+    )
+
+
+def _pairing_text(device: Device) -> str:
+    return (
+        f"A TRMNL wants to connect.\n\nFriendly ID: {device.friendly_id}\nMAC: {device.mac}\n"
+        f"Model: {device.model or '?'}  Firmware: {device.fw_version or '?'}\n\n"
+        "The device screen should show the same friendly ID. Approve it?"
+    )
+
+
 class CoffeeBot:
-    def __init__(self, token: str, allowed_user_ids: frozenset[int], agent: CoffeeAgent, services: Services):
+    def __init__(
+        self,
+        token: str,
+        allowed_user_ids: frozenset[int],
+        agent: CoffeeAgent,
+        services: Services,
+        *,
+        http_host: str = "0.0.0.0",
+        http_port: int = 9157,
+        **server_options,
+    ):
         self.agent = agent
         self.svc = services
         self.allowed = allowed_user_ids
+        self.http_host, self.http_port = http_host, http_port
+        self.server = DeviceServer(
+            services.devices, services.renderer.cache, services.renderer, self, services.tz, **server_options
+        )
         self.pending_approvals: dict[str, PendingApproval] = {}
         self._media_groups: dict[str, MediaGroupBuffer] = {}
         self._nightly_task: asyncio.Task | None = None
@@ -136,7 +171,10 @@ class CoffeeBot:
         app.add_handler(CommandHandler("menu", self.cmd_menu, filters=users))
         app.add_handler(CommandHandler("new", self.cmd_new, filters=users))
         app.add_handler(CommandHandler("undo", self.cmd_undo, filters=users))
+        app.add_handler(CommandHandler(["device", "devices"], self.cmd_device, filters=users))
+        app.add_handler(CommandHandler("forget", self.cmd_forget, filters=users))
         app.add_handler(CallbackQueryHandler(self.on_approval, pattern=r"^approve:"))
+        app.add_handler(CallbackQueryHandler(self.on_pairing, pattern=r"^pair:"))
         content = filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.Document.IMAGE
         app.add_handler(MessageHandler(users & content, self.on_message))
         app.add_handler(MessageHandler(~users, self.on_stranger))
@@ -154,12 +192,26 @@ class CoffeeBot:
             log.info("initial render done")
         except Exception:
             log.exception("initial render failed")
+        await self.server.start(self.http_host, self.http_port)
         self._nightly_task = asyncio.create_task(self._nightly_rerender())
 
     async def _post_shutdown(self, app: Application) -> None:
         if self._nightly_task:
             self._nightly_task.cancel()
+        await self.server.stop()
         await self.svc.renderer.close()
+
+    # ---- DeviceNotifier (called by the HTTP server) ----
+
+    async def notify_pairing(self, device: Device) -> None:
+        for user_id in self.allowed:
+            await self.application.bot.send_message(
+                user_id, _pairing_text(device), reply_markup=_pairing_keyboard(device)
+            )
+
+    async def notify(self, text: str) -> None:
+        for user_id in self.allowed:
+            await self.application.bot.send_message(user_id, text)
 
     async def _nightly_rerender(self) -> None:
         """Re-render just after local midnight so the date and 'days since roast' stay current."""
@@ -200,6 +252,52 @@ class CoffeeBot:
         self.agent.reset(update.effective_chat.id)
         result = await self.svc.render(menu)
         await update.effective_message.reply_photo(result.preview_png, caption="Reverted the last menu change.")
+
+    async def cmd_device(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        message = update.effective_message
+        await message.reply_text(format_status(self.svc.devices, self.svc.tz))
+        for device in self.svc.devices.devices:
+            if device.status == "pending":
+                await message.reply_text(_pairing_text(device), reply_markup=_pairing_keyboard(device))
+
+    async def cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/forget <friendly_id>: remove a device so it has to pair again (e.g. after a denial)."""
+        message = update.effective_message
+        if not context.args:
+            await message.reply_text("Usage: /forget <friendly ID>  (see /device)")
+            return
+        friendly_id = context.args[0].upper()
+        async with self.svc.devices.lock:
+            removed = self.svc.devices.remove(friendly_id)
+            if removed:
+                self.svc.devices.save()
+        await message.reply_text(
+            f"Forgot {friendly_id}. If it's still running, it will ask to pair again."
+            if removed else f"No device with friendly ID {friendly_id}."
+        )
+
+    async def on_pairing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if query.from_user.id not in self.allowed:
+            await query.answer("Not allowed.")
+            return
+        _, friendly_id, answer = query.data.split(":")
+        approved = answer == "yes"
+        async with self.svc.devices.lock:
+            device = self.svc.devices.by_friendly_id(friendly_id)
+            if device is None or device.status != "pending":
+                state = device.status if device else "gone"
+                await query.answer(f"Already handled ({state}).")
+                await query.edit_message_reply_markup(None)
+                return
+            device.status = "approved" if approved else "denied"
+            self.svc.devices.save()
+        await query.answer("Approved" if approved else "Denied")
+        outcome = (
+            "✅ Approved. The menu appears on the display at its next check-in (within a minute)."
+            if approved else f"❌ Denied. Use /forget {friendly_id} if you want to let it pair again later."
+        )
+        await query.edit_message_text(f"{query.message.text}\n\n{outcome}")
 
     async def on_approval(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query

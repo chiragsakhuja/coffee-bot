@@ -4,7 +4,9 @@ import pytest
 from PIL import Image
 
 from coffee_bot.config import TEMPLATES_DIR
-from coffee_bot.render import BMP_1BIT, HEIGHT, PNG_1BIT, PNG_2BIT, WIDTH, Renderer, encode_png_gray2
+from coffee_bot.render import (
+    BMP_1BIT, HEIGHT, MAX_DEVICE_IMAGE_BYTES, PNG_1BIT, PNG_2BIT, WIDTH, Renderer, encode_png_gray2,
+)
 
 TODAY = date(2026, 9, 30)
 
@@ -49,3 +51,20 @@ async def test_render_outputs(renderer, tmp_path, sample_menu, count):
     assert one.size == (WIDTH, HEIGHT) and one.mode == "1"
     bmp = Image.open(tmp_path / BMP_1BIT)
     assert bmp.size == (WIDTH, HEIGHT) and bmp.mode == "1"
+
+
+async def test_cache_published_and_message(renderer, sample_menu):
+    result = await renderer.render(sample_menu, TODAY)
+    for variant, suffix in (("2bit", "-2b.png"), ("1bit", "-1b.png"), ("bmp", "-1b.bmp")):
+        image = renderer.cache.latest[variant]
+        assert image.filename.endswith(suffix) and len(image.filename) <= 31
+        assert renderer.cache.get(image.filename) is image
+        assert len(image.data) <= MAX_DEVICE_IMAGE_BYTES
+    assert len(renderer.cache.latest["bmp"].data) == 48062  # firmware requires exactly this for BMP
+    assert result.images == renderer.cache.latest
+
+    msg = await renderer.render_message("Almost there", "Approve in Telegram")
+    assert renderer.cache.get(msg.filename) is msg
+    reopened = Image.open(__import__("io").BytesIO(msg.data))
+    assert reopened.size == (WIDTH, HEIGHT) and reopened.mode == "1"
+    assert (await renderer.render_message("Almost there", "Approve in Telegram")) is msg

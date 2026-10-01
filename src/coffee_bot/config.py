@@ -19,6 +19,11 @@ class Config:
     data_dir: Path
     output_dir: Path
     timezone: ZoneInfo
+    http_host: str
+    http_port: int
+    public_base_url: str | None
+    image_format: str
+    low_battery_volts: float
     project_root: Path = PROJECT_ROOT
     templates_dir: Path = TEMPLATES_DIR
 
@@ -47,6 +52,10 @@ def load_config() -> Config:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise SystemExit("ANTHROPIC_API_KEY is not set (see .env.example)")
 
+    image_format = os.environ.get("IMAGE_FORMAT", "auto").strip().lower()
+    if image_format not in ("auto", "2bit", "1bit", "bmp"):
+        raise SystemExit("IMAGE_FORMAT must be one of: auto, 2bit, 1bit, bmp")
+
     return Config(
         telegram_token=token,
         allowed_user_ids=allowed,
@@ -54,4 +63,9 @@ def load_config() -> Config:
         data_dir=_resolve(os.environ.get("DATA_DIR", "./data")),
         output_dir=_resolve(os.environ.get("OUTPUT_DIR", "./output")),
         timezone=ZoneInfo(os.environ.get("TIMEZONE", "UTC")),
+        http_host=os.environ.get("HTTP_HOST", "0.0.0.0"),
+        http_port=int(os.environ.get("HTTP_PORT", "9157")),
+        public_base_url=os.environ.get("PUBLIC_BASE_URL", "").strip() or None,
+        image_format=image_format,
+        low_battery_volts=float(os.environ.get("LOW_BATTERY_VOLTS", "3.5")),
     )

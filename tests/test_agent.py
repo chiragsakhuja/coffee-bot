@@ -8,6 +8,7 @@ import pytest
 from anthropic import AsyncAnthropic
 
 from coffee_bot.agent import CoffeeAgent
+from coffee_bot.devices import DeviceRegistry
 from coffee_bot.sandbox import Sandbox
 from coffee_bot.store import MenuStore
 from coffee_bot.tools import Services
@@ -29,6 +30,7 @@ def svc(tmp_path):
         renderer=FakeRenderer(),
         sandbox=Sandbox(tmp_path, (tmp_path,), (tmp_path,)),
         tz=ZoneInfo("UTC"),
+        devices=DeviceRegistry(tmp_path / "data"),
     )
 
 
