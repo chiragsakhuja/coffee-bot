@@ -29,13 +29,13 @@ PENDING_REFRESH_SECONDS = 30
 TWO_BIT_MIN_FIRMWARE = (1, 6, 0)
 
 PAIRING_TITLE = "Almost there"
-PAIRING_BODY = "This display is waiting for approval. Check Telegram and tap Approve."
+PAIRING_BODY = "This display is waiting for approval. Check Slack and click Approve."
 UNAVAILABLE_TITLE = "Menu unavailable"
 UNAVAILABLE_BODY = "The coffee menu couldn't be rendered. Check the coffee-bot logs."
 
 
 class DeviceNotifier(Protocol):
-    """Implemented by the Telegram bot."""
+    """Implemented by the Slack bot."""
 
     async def notify_pairing(self, device: Device) -> None: ...
     async def notify(self, text: str) -> None: ...
@@ -123,7 +123,7 @@ class DeviceServer:
             self._runner = None
 
     def _spawn(self, make: Callable[[], Awaitable[None]], what: str) -> None:
-        """Run a notification in the background so the device's HTTP request isn't held up by Telegram."""
+        """Run a notification in the background so the device's HTTP request isn't held up by Slack."""
 
         async def runner() -> None:
             try:

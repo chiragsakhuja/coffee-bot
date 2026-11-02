@@ -70,7 +70,7 @@ class ImageCache:
 
 @dataclass
 class RenderResult:
-    preview_png: bytes  # 8-bit grayscale PNG of the 4-level image, for sending to Telegram
+    preview_png: bytes  # 8-bit grayscale PNG of the 4-level image, for sending to Slack
     paths: list[Path]
     images: dict[str, CachedImage] = field(default_factory=dict)
 

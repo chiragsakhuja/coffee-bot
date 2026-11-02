@@ -1,4 +1,4 @@
-"""Claude conversation loop: one append-only history per Telegram chat."""
+"""Claude conversation loop: one append-only history per Slack conversation."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ MAX_ITERATIONS = 30
 
 SYSTEM_PROMPT = f"""\
 You run a small coffee bar's menu, shown on a TRMNL e-ink display (800x480, 4 shades of gray) in the \
-user's kitchen. The user chats with you on Telegram, sending photos and notes about coffee bags, brew \
+user's kitchen. The user chats with you on Slack, sending photos and notes about coffee bags, brew \
 recipes, and dial-in results. You keep the menu up to date with your tools; the display image is \
 re-rendered automatically whenever the menu changes.
 
@@ -60,10 +60,11 @@ sleep window. Mention that shorter intervals use more battery.
 
 Shell commands
 - You can run shell commands in the project directory with run_shell_command. The user approves each \
-one in Telegram. Only run commands when they clearly help with what the user asked.
+one in Slack with a button. Only run commands when they clearly help with what the user asked.
 
 Style
-- Your replies go to Telegram as plain text. Don't use Markdown formatting. Keep replies short and \
+- Your replies go to Slack. Write plain text; if you need emphasis use Slack's *bold* (single \
+asterisks), never Markdown headings, tables, or **double asterisks**. Keep replies short and \
 friendly: confirm what changed in a sentence or two, or ask your questions.
 """
 
@@ -80,12 +81,12 @@ class CoffeeAgent:
         self.client = client
         self.model = model
         self.svc = services
-        self._conversations: dict[int, Conversation] = {}
+        self._conversations: dict[str, Conversation] = {}
 
-    def reset(self, chat_id: int) -> None:
+    def reset(self, chat_id: str) -> None:
         self._conversations.pop(chat_id, None)
 
-    def _conversation(self, chat_id: int) -> Conversation:
+    def _conversation(self, chat_id: str) -> Conversation:
         conv = self._conversations.get(chat_id)
         if conv is None or (
             not conv.lock.locked() and time.monotonic() - conv.last_active > IDLE_RESET_SECONDS
@@ -93,7 +94,7 @@ class CoffeeAgent:
             conv = self._conversations[chat_id] = Conversation()
         return conv
 
-    async def handle(self, chat_id: int, content: list[dict], chat: ChatIO) -> str:
+    async def handle(self, chat_id: str, content: list[dict], chat: ChatIO) -> str:
         """Run one user turn (text and/or images) to completion and return Claude's final text."""
         conv = self._conversation(chat_id)
         async with conv.lock:

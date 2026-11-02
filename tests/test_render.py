@@ -63,8 +63,8 @@ async def test_cache_published_and_message(renderer, sample_menu):
     assert len(renderer.cache.latest["bmp"].data) == 48062  # firmware requires exactly this for BMP
     assert result.images == renderer.cache.latest
 
-    msg = await renderer.render_message("Almost there", "Approve in Telegram")
+    msg = await renderer.render_message("Almost there", "Approve in Slack")
     assert renderer.cache.get(msg.filename) is msg
     reopened = Image.open(__import__("io").BytesIO(msg.data))
     assert reopened.size == (WIDTH, HEIGHT) and reopened.mode == "1"
-    assert (await renderer.render_message("Almost there", "Approve in Telegram")) is msg
+    assert (await renderer.render_message("Almost there", "Approve in Slack")) is msg

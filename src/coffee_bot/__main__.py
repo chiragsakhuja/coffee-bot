@@ -16,7 +16,7 @@ from .tools import Services
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # don't log every Telegram poll
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # don't log every API request
     logging.getLogger("httpx2").setLevel(logging.WARNING)
 
     cfg = load_config()
@@ -36,7 +36,8 @@ def main() -> None:
     )
     agent = CoffeeAgent(AsyncAnthropic(), cfg.model, services)
     CoffeeBot(
-        cfg.telegram_token,
+        cfg.slack_bot_token,
+        cfg.slack_app_token,
         cfg.allowed_user_ids,
         agent,
         services,

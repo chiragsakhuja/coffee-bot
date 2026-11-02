@@ -2,8 +2,8 @@
 
 This guide takes you from nothing to a running bot on a Linux server with systemd, with your TRMNL OG pulling the menu straight from the bot's built-in server. It covers:
 
-1. [Creating the Telegram bot](#1-create-the-telegram-bot)
-2. [Finding your Telegram user ID](#2-find-your-telegram-user-id)
+1. [Creating the Slack app](#1-create-the-slack-app)
+2. [Finding your Slack member ID](#2-find-your-slack-member-id)
 3. [Getting an Anthropic API key](#3-get-an-anthropic-api-key)
 4. [Installing on the server](#4-install-on-the-server)
 5. [Configuring `.env`](#5-configure-env)
@@ -17,49 +17,40 @@ This guide takes you from nothing to a running bot on a Linux server with system
 
 ---
 
-## 1. Create the Telegram bot
+## 1. Create the Slack app
 
-Telegram bots are created by talking to Telegram's own bot, **@BotFather**.
+The bot connects to Slack with **Socket Mode**: it opens an outbound websocket to Slack, so Slack never needs to reach your server. No public URL, port forwarding, or TLS certificate is needed, which suits a server on your home LAN.
 
-1. In Telegram (phone or desktop), search for **@BotFather**. It has a blue verified check mark. Open the chat and tap **Start**.
-2. Send `/newbot`.
-3. BotFather asks for a **name**. This is the display name shown in chats and can be anything, e.g. `Coffee Menu`.
-4. BotFather asks for a **username**. It must be unique and end in `bot`, e.g. `sakhuja_coffee_bot`. If it's taken, try another.
-5. BotFather replies with a message that contains your **HTTP API token**. It looks like this:
+The repo includes an app manifest that sets up all scopes, events, the `/coffee` command and Socket Mode in one go.
 
-   ```
-   7123456789:AAH-some-long-random-string_abcdefg
-   ```
+1. Go to <https://api.slack.com/apps> and click **Create New App → From an app manifest**.
+2. Pick the workspace you want the bot in.
+3. Choose **YAML**, delete the example, and paste the contents of [`deploy/slack-app-manifest.yml`](../deploy/slack-app-manifest.yml). Click **Next**, then **Create**.
+4. **App-level token** (lets the bot open the Socket Mode connection): on the app's **Basic Information** page, scroll to **App-Level Tokens → Generate Token and Scopes**. Name it `socket`, add the scope `connections:write`, and click **Generate**. Copy the token (`xapp-…`). This is `SLACK_APP_TOKEN`.
+5. **Install the app:** open **Install App** (or **OAuth & Permissions**) and click **Install to *your workspace***, then **Allow**. Copy the **Bot User OAuth Token** (`xoxb-…`). This is `SLACK_BOT_TOKEN`.
 
-   Copy it. This token is the bot's password: anyone who has it can control the bot. Don't commit it to git or share it. If it leaks, send `/revoke` to BotFather and pick your bot to get a new one.
+   > **Company workspaces** often require an admin to approve new apps. If you see **Request to Install** instead of **Install**, submit the request and wait for approval. You can also create the app in a personal workspace you own.
+
+Both tokens are passwords: anyone who has them can act as the bot. Don't commit them to git. If one leaks, regenerate it (**Basic Information → App-Level Tokens** for `xapp-`, **OAuth & Permissions → Revoke / Reinstall** for `xoxb-`).
 
 ### Optional polish
 
-Still in the BotFather chat:
+On **Basic Information → Display Information** you can set the app icon, name and description. If you change scopes or events later, Slack asks you to **reinstall** the app; the bot token usually stays the same.
 
-- **Description** (shown before someone presses Start): `/setdescription`, pick your bot, then send e.g. `Keeps the coffee menu on my e-ink display up to date.`
-- **Profile photo:** `/setuserpic`, pick your bot, then send an image.
-- **Command menu:** the bot registers its commands (`/menu`, `/new`, `/undo`, `/help`) automatically on startup, so you don't need `/setcommands`.
+### Where you can talk to it
 
-### Privacy mode
+- **Direct messages (recommended):** find **Coffee Bot** under **Apps** in Slack's sidebar (or search for it) and open its **Messages** tab. Everything you send there goes to the bot.
+- **Channels:** invite it with `/invite @coffee-bot`, then @mention it: `@coffee-bot espresso on the Sey is dialed`. It replies in a thread. In channels it only sees messages that mention it.
+- **`/coffee` command:** works in the bot's DM and in channels the bot is in. See [Talking to the bot](../README.md#talking-to-the-bot).
 
-By default, bots in *group chats* only see commands and replies. This bot is meant for a **private 1:1 chat**, where it sees every message, so you don't need to change anything. If you want to use it in a group, send `/setprivacy` to BotFather and choose **Disable**, then add the bot to the group. The allowlist below still applies per user.
+## 2. Find your Slack member ID
 
-## 2. Find your Telegram user ID
+The bot ignores everyone except the Slack member IDs you allow. A member ID looks like `U012AB3CDE` (on Enterprise Grid it may start with `W`). It's not your display name or @handle.
 
-The bot ignores everyone except the numeric user IDs you allow. You need your ID, which is a number, not your @username.
+1. In Slack, click your profile picture → **Profile**.
+2. Click the **⋮** (more) button → **Copy member ID**.
 
-**Option A (easiest):** message **@userinfobot** in Telegram. It replies with your `Id`, e.g. `123456789`.
-
-**Option B (no third-party bot):**
-1. Open a chat with *your* new bot and send it any message, e.g. `hi`.
-2. On any computer, run (replace `<TOKEN>`):
-   ```bash
-   curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | python3 -m json.tool
-   ```
-3. Look for `"from": { "id": 123456789, ... }`. That number is your user ID.
-
-To let several people use the bot, collect everyone's ID and separate them with commas.
+To let several people use the bot, collect everyone's ID (same steps on their profile) and separate them with commas.
 
 ## 3. Get an Anthropic API key
 
@@ -112,8 +103,9 @@ sudo -u coffeebot nano .env
 
 | Variable | Example | Notes |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | `7123456789:AAH...` | From step 1 |
-| `ALLOWED_USER_IDS` | `123456789,987654321` | From step 2, comma-separated |
+| `SLACK_BOT_TOKEN` | `xoxb-...` | Bot User OAuth Token, from step 1 |
+| `SLACK_APP_TOKEN` | `xapp-...` | App-level token with `connections:write`, from step 1 |
+| `ALLOWED_USER_IDS` | `U012AB3CDE,U045FG6HIJ` | Slack member IDs from step 2, comma-separated |
 | `ANTHROPIC_API_KEY` | `sk-ant-...` | From step 3 |
 | `OUTPUT_DIR` | `/var/lib/coffee-bot/output` | Copies of the rendered images (handy for debugging; the device is served from memory) |
 | `DATA_DIR` | `/var/lib/coffee-bot/data` | `menu.json`, `devices.json`, undo history |
@@ -123,7 +115,7 @@ sudo -u coffeebot nano .env
 | `HTTP_PORT` | `9157` | Port the TRMNL server listens on |
 | `PUBLIC_BASE_URL` | *(empty)* | Base URL put into image links. Leave empty: it's taken from the address the device used. Set it (e.g. `http://192.168.1.50:9157`) only if the device reaches the bot through a proxy or different hostname |
 | `IMAGE_FORMAT` | `auto` | `auto` = 2-bit PNG for firmware ≥ 1.6, otherwise 1-bit PNG. Or force `2bit`, `1bit`, `bmp` |
-| `LOW_BATTERY_VOLTS` | `3.5` | Telegram alert when the device's battery drops below this |
+| `LOW_BATTERY_VOLTS` | `3.5` | Slack DM alert when the device's battery drops below this |
 
 With the systemd unit below, use the `/var/lib/coffee-bot/...` paths. The unit's sandbox only allows writes there and in `templates/`.
 
@@ -138,17 +130,17 @@ sudo -u coffeebot env PLAYWRIGHT_BROWSERS_PATH=/opt/coffee-bot/.playwright HOME=
     .venv/bin/python -m coffee_bot
 ```
 
-You should see `initial render done` and `TRMNL server listening on http://0.0.0.0:9157` in the log. From another terminal, `curl http://localhost:9157/healthz` should return `{"ok": true, ...}`. Then in Telegram:
+You should see `connected to Slack workspace …`, `initial render done`, `TRMNL server listening on http://0.0.0.0:9157` and `⚡️ Bolt app is running!` in the log. From another terminal, `curl http://localhost:9157/healthz` should return `{"ok": true, ...}`. Then in Slack, open the bot's DM (**Apps → Coffee Bot → Messages**):
 
-1. Open your bot and send `/start`. You should get the help text.
-2. Send `/menu`. You should get the (empty) menu image.
+1. Send `/coffee help`. You should get the help text.
+2. Send `/coffee menu`. You should get the (empty) menu image.
 3. Send a photo of a coffee bag with the caption `this one's in the blue bin`. The bot reads the bag, asks about anything it can't read (e.g. the roast date), then sends a preview.
 4. Send a recipe: `espresso on that: 18g in, 38g out, 28s, grind 2.4 — dialed`.
-5. Try a command: `how much disk space is free?`. You should get a **Run / Don't run** button.
+5. Try a command: `how much disk space is free?`. You should get **Run / Don't run** buttons.
 
 Press `Ctrl+C` to stop.
 
-You can also render without Telegram, which is handy when editing the template:
+You can also render without Slack, which is handy when editing the template:
 
 ```bash
 .venv/bin/python scripts/render_sample.py                    # fixture with 0-4 coffees → output/samples/
@@ -178,7 +170,7 @@ sudo -u coffeebot .venv/bin/pip install -e .
 sudo systemctl restart coffee-bot
 ```
 
-The bot may have edited `templates/` from Telegram. Commit those changes (or `git stash`) before pulling so they don't conflict. Backups of every template edit live in `DATA_DIR/history/templates/`.
+The bot may have edited `templates/` from Slack. Commit those changes (or `git stash`) before pulling so they don't conflict. Backups of every template edit live in `DATA_DIR/history/templates/`.
 
 ## 8. Connect the TRMNL
 
@@ -229,17 +221,17 @@ The server address is set in the TRMNL's Wi-Fi setup page (captive portal):
    Use your server's address, with `http://` and **no trailing slash**. The device adds `/api/...` itself.
 5. Save. The device joins Wi-Fi and contacts the server.
 
-### 8.3 Approve it in Telegram
+### 8.3 Approve it in Slack
 
-On first contact the bot sends you:
+On first contact the bot sends you a DM:
 
 > A TRMNL wants to connect. Friendly ID: **3FA9C1** … Approve it?  **[✅ Approve] [❌ Deny]**
 
-The device screen shows its own friendly ID while it waits. Check that the IDs match, then tap **Approve**. While waiting, the device checks in every few seconds, so the menu appears within about a minute.
+The device screen shows its own friendly ID while it waits. Check that the IDs match, then click **Approve**. While waiting, the device checks in every few seconds, so the menu appears within about a minute.
 
-- Missed the message? Send `/device`. It shows any pending devices again with Approve/Deny buttons.
-- Tapped **Deny** by mistake? Send `/forget <friendly ID>`. The device will ask again next time it checks in.
-- **Moving a device from trmnl.com (or another server):** the device still has its old API key, which this server doesn't recognise. The server replies with `status: 500`, which tells the firmware to drop its key and pair again, so you get the Telegram approval message after one or two wake-ups.
+- Missed the message? Send `/coffee device`. It shows any pending devices again with Approve/Deny buttons.
+- Clicked **Deny** by mistake? Send `/coffee forget <friendly ID>`. The device will ask again next time it checks in.
+- **Moving a device from trmnl.com (or another server):** the device still has its old API key, which this server doesn't recognise. The server replies with `status: 500`, which tells the firmware to drop its key and pair again, so you get the Slack approval message after one or two wake-ups.
 
 ### 8.4 Which image the device gets
 
@@ -270,7 +262,7 @@ Expected output (shortened):
   ✓ paired as friendly ID E8BD02
 → GET http://localhost:9157/api/display
   HTTP 200: {"status": 202, …}
-  … waiting for approval: tap Approve for E8BD02 in Telegram        ← tap Approve now
+  … waiting for approval: click Approve for E8BD02 in Slack        ← click Approve now
 → GET http://localhost:9157/api/display
   HTTP 200: {"status": 0, "image_url": "…/images/menu-9bb2e6b342-2b.png", "filename": "menu-9bb2e6b342-2b.png", "refresh_rate": 900, …}
   ✓ display OK
@@ -278,19 +270,19 @@ Expected output (shortened):
   ✓ image is valid for a TRMNL OG
 → POST http://localhost:9157/api/log
   ✓ log accepted
-All checks passed. Try /device in Telegram.
+All checks passed. Try /coffee device in Slack.
 ```
 
 Useful variations:
 
 ```bash
-fake_device.py --battery 3.3        # low battery → you get a 🔋 alert in Telegram (once)
+fake_device.py --battery 3.3        # low battery → you get a 🔋 alert in Slack (once)
 fake_device.py --fw 1.5.0           # old firmware → 1-bit PNG
 fake_device.py --reset              # forget the saved key and pair from scratch
 fake_device.py --mac AA:BB:CC:00:00:02   # a second "device"
 ```
 
-The fake device appears in `/device` like a real one. Remove it afterwards with `/forget <friendly ID>`.
+The fake device appears in `/coffee device` like a real one. Remove it afterwards with `/coffee forget <friendly ID>`.
 
 ### 9.2 By hand with curl
 
@@ -305,7 +297,7 @@ curl -s $BASE/preview -o preview.png && file preview.png
 # 1) Setup: what a new device sends first
 curl -s $BASE/api/setup -H 'ID: AA:BB:CC:DD:EE:01' -H 'FW-Version: 1.8.6' -H 'Model: og'
 #   {"status": 200, "api_key": "Xy…", "friendly_id": "3FA9C1", "image_url": "…", "filename": "msg-…", …}
-#   → Telegram asks you to approve 3FA9C1
+#   → the bot DMs you in Slack to approve 3FA9C1
 
 KEY=<api_key from above>
 
@@ -332,7 +324,7 @@ Responses you can check for:
 
 | Request | Situation | Response |
 |---|---|---|
-| `/api/setup` | new MAC | HTTP 200, `status: 200`, new key; Telegram approval request |
+| `/api/setup` | new MAC | HTTP 200, `status: 200`, new key; Slack approval request |
 | `/api/setup` | denied MAC | HTTP 404, `status: 404`, nulls |
 | `/api/display` | pending approval | `status: 202` (device shows its friendly ID, retries quickly) |
 | `/api/display` | approved | `status: 0`, `image_url`, `filename`, `refresh_rate` |
@@ -348,7 +340,7 @@ Responses you can check for:
 
 ## 10. Refresh schedule and device status
 
-**Device status:** send `/device` (or ask *"how's the display battery?"*). You get each device's last check-in, battery (volts and an approximate %), Wi-Fi strength, firmware, the image it's showing, its next expected wake, and its recent log messages.
+**Device status:** send `/coffee device` (or ask *"how's the display battery?"*). You get each device's last check-in, battery (volts and an approximate %), Wi-Fi strength, firmware, the image it's showing, its next expected wake, and its recent log messages.
 
 **Refresh interval:** ask Claude in plain language:
 
@@ -358,33 +350,39 @@ Responses you can check for:
 
 The default is every 15 minutes, with night mode off. A shorter interval drains the battery faster. During the night window the device gets one long sleep that ends at the window's end, so it updates once in the morning. Changes apply at the device's next wake-up. The settings are stored in `DATA_DIR/devices.json`.
 
-**Low-battery alert:** when a device reports a battery voltage below `LOW_BATTERY_VOLTS` (default 3.5 V, roughly 25%) and isn't on USB, every allowed Telegram user gets one alert. It re-arms after the battery is charged (≥ 0.2 V above the threshold).
+**Low-battery alert:** when a device reports a battery voltage below `LOW_BATTERY_VOLTS` (default 3.5 V, roughly 25%) and isn't on USB, every allowed Slack user gets one DM. It re-arms after the battery is charged (≥ 0.2 V above the threshold).
 
 ## 11. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Bot doesn't reply at all | Check `journalctl -u coffee-bot`. Look for `ignoring message from unauthorized user <id>` and add that ID to `ALLOWED_USER_IDS`. |
-| `Conflict: terminated by other getUpdates request` | Two copies of the bot are running with the same token (e.g. a foreground test + the service). Stop one. |
+| Bot doesn't reply at all | Check `journalctl -u coffee-bot`. Look for `ignoring message from unauthorized user <id>` and add that member ID to `ALLOWED_USER_IDS`. |
+| Bot replies twice, or only sometimes | Two copies are running with the same tokens (e.g. a foreground test + the service); Slack spreads events across both connections. Stop one. |
+| `invalid_auth` / `not_authed` at startup | Wrong `SLACK_BOT_TOKEN`, or the app was uninstalled. Reinstall and copy the `xoxb-` token again. |
+| Socket Mode connection fails at startup | Wrong `SLACK_APP_TOKEN`, or it lacks the `connections:write` scope. Generate a new app-level token. |
+| `/coffee` says "dispatch_failed" or nothing happens | The bot isn't running, or Socket Mode is off for the app (**Settings → Socket Mode**). |
+| "Sending messages to this app has been turned off" | **App Home → Show Tabs**: enable the Messages tab and tick *Allow users to send Slash commands and messages from the messages tab*. (The manifest sets this.) |
+| Photos are ignored or "couldn't read that" | The app lacks `files:read`. Add it under **OAuth & Permissions** and reinstall. |
+| `/coffee` in a channel says it can't post there | Invite the bot (`/invite @coffee-bot`) or use the command in its DM. |
 | `Executable doesn't exist at .../chrome-headless-shell` | Chromium isn't installed where the service looks. Re-run the `playwright install` step with the same `PLAYWRIGHT_BROWSERS_PATH` as the unit file. |
 | Chromium crashes with missing `.so` libraries | Run `sudo .venv/bin/playwright install-deps chromium`. |
 | Text looks like a different font than expected | Install `fonts-inter` (or edit `font-family` in `templates/menu.css`). |
 | `Claude API returned an error (401)` | Bad `ANTHROPIC_API_KEY`. |
 | `(429)` or `(529)` errors | Rate-limited or overloaded. Wait a minute and retry. |
-| Display shows an old image | Menu changes appear at the next wake. Check `/device` for "Next wake". `/menu` forces a re-render. |
-| Device shows "MAC not registered" or similar | The device was denied. `/forget <friendly ID>`, then wait for it to ask again. |
-| Device stuck showing its friendly ID | It's waiting for approval. Send `/device` and tap Approve. |
+| Display shows an old image | Menu changes appear at the next wake. Check `/coffee device` for "Next wake". `/coffee menu` forces a re-render. |
+| Device shows "MAC not registered" or similar | The device was denied. `/coffee forget <friendly ID>`, then wait for it to ask again. |
+| Device stuck showing its friendly ID | It's waiting for approval. Send `/coffee device` and click Approve. |
 | Device says it can't reach the API / server | Wrong URL in the captive portal (needs `http://`, IP, port, no trailing slash), firewall blocking 9157, or the server's IP changed. Test `http://<ip>:9157/healthz` from a phone on the same Wi-Fi. |
-| `/device` says "last seen: never" after approval | The device hasn't woken since. Press the button on the back to wake it, or wait one refresh interval. |
+| `/coffee device` says "last seen: never" after approval | The device hasn't woken since. Press the button on the back to wake it, or wait one refresh interval. |
 | Log shows `display from unknown/denied device` | Normal right after moving a device to this server; it re-pairs automatically. |
 | `OSError: [Errno 98] address already in use` | Something else uses port 9157. Change `HTTP_PORT` (and the device's API server URL). |
 | A template edit broke rendering | Ask the bot to fix it, or restore from `DATA_DIR/history/templates/` (or `git checkout templates/`). |
-| Menu change you didn't want | Send `/undo` (it can be repeated). |
+| Menu change you didn't want | Send `/coffee undo` (it can be repeated). |
 
 ## 12. Security notes
 
-- **Only allowlisted users** can talk to the bot. Messages from anyone else are logged and ignored. Approval buttons also check the allowlist.
-- **Devices must be approved** in Telegram before they get the menu. Each one gets its own random API key, and display/log requests are checked against it (and the MAC). The HTTP server is plain HTTP and meant for your **home LAN only**. Don't port-forward 9157 to the internet. Images are served without auth (their names are content hashes); they contain only your coffee menu.
+- **Only allowlisted users** can talk to the bot. Messages from anyone else are logged and ignored. Approval buttons and `/coffee` also check the allowlist. If you add the bot to a channel, everyone in it can see its replies and previews.
+- **Devices must be approved** in Slack before they get the menu. Each one gets its own random API key, and display/log requests are checked against it (and the MAC). The HTTP server is plain HTTP and meant for your **home LAN only**. Don't port-forward 9157 to the internet. Images are served without auth (their names are content hashes); they contain only your coffee menu.
 - **File edits are sandboxed.** Claude can *write* only in `templates/` and *read* only in `templates/` and `DATA_DIR`. The menu itself is changed only through validated tools.
 - **Shell commands need your approval.** Every command is shown to you with a Run / Don't run button and times out after 5 minutes without an answer. Approved commands run in the project directory with a 60 s timeout. Under systemd they also run inside the unit's sandbox: read-only filesystem except `/var/lib/coffee-bot` and `templates/`, no access to `/home`, and no privilege escalation. Read each command before approving it. Text in a photo could try to trick the model into proposing a harmful command, and the approval step is your safeguard.
-- Keep `.env` at `chmod 600`. Rotate the Telegram token (`/revoke` in BotFather) or the Anthropic key if either leaks.
+- Keep `.env` at `chmod 600`. Rotate the Slack tokens (see step 1) or the Anthropic key if any of them leaks. On a company workspace, remember that Slack messages and files (including bag photos and approved shell commands) are retained under your workspace's policies.

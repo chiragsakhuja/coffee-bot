@@ -1,4 +1,4 @@
-"""Telegram front-end: auth filter, message/photo intake, command approvals, replies."""
+"""Slack front-end (Socket Mode): auth filter, message/photo intake, command approvals, replies."""
 
 from __future__ import annotations
 
@@ -7,22 +7,19 @@ import base64
 import contextlib
 import io
 import logging
+import re
 import secrets
-from dataclasses import dataclass, field
+import signal
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from PIL import Image
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
-from telegram.constants import ChatAction
-from telegram.ext import (
-    Application,
-    ApplicationBuilder,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+import aiohttp
+from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
+from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_bolt.async_app import AsyncApp
+from slack_sdk.errors import SlackApiError
+from slack_sdk.web.async_client import AsyncWebClient
 
 from .agent import CoffeeAgent
 from .devices import Device, format_status
@@ -32,112 +29,162 @@ from .tools import Services
 
 log = logging.getLogger(__name__)
 
+register_heif_opener()  # iPhone photos can arrive as HEIC
+
+SLASH_COMMAND = "/coffee"
 APPROVAL_TIMEOUT_SECONDS = 300
-MEDIA_GROUP_WAIT_SECONDS = 1.5
-TELEGRAM_TEXT_LIMIT = 4000
+SLACK_TEXT_LIMIT = 3900  # Slack truncates long messages; keep chunks well under its 4000-char guidance
+MAX_DOWNLOAD_BYTES = 30_000_000
 MAX_IMAGE_BYTES = 4_500_000  # Anthropic's per-image limit is 5 MB (base64-decoded)
 MAX_IMAGE_SIDE = 2000
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-
-BOT_COMMANDS = [
-    ("menu", "Show the current display image"),
-    ("new", "Start a fresh conversation"),
-    ("undo", "Revert the last menu change"),
-    ("device", "TRMNL status: battery, Wi-Fi, last check-in"),
-    ("help", "What can this bot do?"),
-]
+WORKING_REACTION = "hourglass_flowing_sand"
+# Message subtypes that carry something the user wrote. Others (edits, joins, bot posts…) are ignored.
+USER_SUBTYPES = {None, "file_share", "thread_broadcast"}
 
 HELP_TEXT = (
     "Send me a photo of a coffee bag (tell me which container it's in: black, white, green or blue) "
     "and I'll add it to the menu. Send brew recipes or dial-in notes, e.g. \"V60 on the Onyx: 15g in, "
     "250g out, 22 clicks, 3:00, a bit sour\", and I'll update the brew methods. You can also ask me "
     "to change the layout of the display.\n\n"
-    "/menu shows the current image\n/new starts a fresh conversation\n/undo reverts the last menu change\n"
-    "/device shows the TRMNL's battery, Wi-Fi and last check-in"
+    f"`{SLASH_COMMAND} menu` shows the current image\n"
+    f"`{SLASH_COMMAND} new` starts a fresh conversation\n"
+    f"`{SLASH_COMMAND} undo` reverts the last menu change\n"
+    f"`{SLASH_COMMAND} device` shows the TRMNL's battery, Wi-Fi and last check-in\n"
+    f"`{SLASH_COMMAND} forget <id>` un-pairs a device"
 )
 
 
-@dataclass
-class PendingApproval:
-    future: asyncio.Future[bool]
-    chat_id: int
+def escape(text: str) -> str:
+    """Escape the three characters Slack treats as control sequences in message text."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-@dataclass
-class MediaGroupBuffer:
-    messages: list[Message] = field(default_factory=list)
+def unescape(text: str) -> str:
+    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
-class TelegramChat:
-    """Implements tools.ChatIO for one Telegram chat."""
+def _section(mrkdwn: str) -> dict:
+    return {"type": "section", "text": {"type": "mrkdwn", "text": mrkdwn}}
 
-    def __init__(self, app: "CoffeeBot", chat_id: int):
-        self.app = app
-        self.chat_id = chat_id
 
-    async def send_photo(self, png: bytes, caption: str | None = None) -> None:
-        await self.app.application.bot.send_photo(self.chat_id, photo=png, caption=caption)
+def _button(label: str, action_id: str, value: str, style: str) -> dict:
+    return {
+        "type": "button", "text": {"type": "plain_text", "text": label, "emoji": True},
+        "action_id": action_id, "value": value, "style": style,
+    }
 
-    async def request_approval(self, command: str, reason: str) -> bool:
-        token = secrets.token_hex(8)
-        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        self.app.pending_approvals[token] = PendingApproval(future, self.chat_id)
-        keyboard = InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton("✅ Run", callback_data=f"approve:{token}:yes"),
-                InlineKeyboardButton("❌ Don't run", callback_data=f"approve:{token}:no"),
-            ]]
-        )
-        await self.app.application.bot.send_message(
-            self.chat_id,
-            f"Claude wants to run a command on the server:\n\n{command}\n\nWhy: {reason}",
-            reply_markup=keyboard,
-        )
-        try:
-            return await asyncio.wait_for(future, APPROVAL_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            await self.app.application.bot.send_message(self.chat_id, "No answer in 5 minutes, so the command was not run.")
-            return False
-        finally:
-            self.app.pending_approvals.pop(token, None)
+
+def _decision_blocks(mrkdwn: str, prefix: str, value: str, yes: str, no: str) -> list[dict]:
+    return [
+        _section(mrkdwn),
+        {"type": "actions", "elements": [
+            _button(yes, f"{prefix}_yes", value, "primary"),
+            _button(no, f"{prefix}_no", value, "danger"),
+        ]},
+    ]
+
+
+def _pairing_text(device: Device) -> str:
+    return (
+        f"A TRMNL wants to connect.\n\n*Friendly ID:* `{device.friendly_id}`\n*MAC:* {escape(device.mac)}\n"
+        f"*Model:* {escape(device.model or '?')}   *Firmware:* {escape(device.fw_version or '?')}\n\n"
+        "The device screen should show the same friendly ID. Approve it?"
+    )
+
+
+def _pairing_blocks(device: Device) -> list[dict]:
+    return _decision_blocks(_pairing_text(device), "pair", device.friendly_id, "✅ Approve", "❌ Deny")
+
+
+def _resolved_blocks(body: dict, outcome: str) -> tuple[str, list[dict]]:
+    """Replace a decision message's buttons with the outcome, keeping its original text."""
+    blocks = body.get("message", {}).get("blocks") or []
+    original = blocks[0]["text"]["text"] if blocks and blocks[0].get("type") == "section" else ""
+    text = f"{original}\n\n{outcome}".strip()
+    return text, [_section(text)]
 
 
 def _prepare_image(data: bytes, media_type: str) -> tuple[bytes, str]:
-    """Downscale/re-encode images that exceed the API's size limits."""
-    if len(data) <= MAX_IMAGE_BYTES and media_type in SUPPORTED_IMAGE_TYPES:
-        with Image.open(io.BytesIO(data)) as im:
-            if max(im.size) <= 8000:
-                return data, media_type
+    """Rotate per EXIF, downscale, and re-encode images the API can't take as-is."""
     with Image.open(io.BytesIO(data)) as im:
-        im = im.convert("RGB")
+        upright = im.getexif().get(0x0112, 1) == 1  # EXIF orientation: phone photos are often rotated
+        if (
+            upright and len(data) <= MAX_IMAGE_BYTES and media_type in SUPPORTED_IMAGE_TYPES
+            and max(im.size) <= MAX_IMAGE_SIDE
+        ):
+            return data, media_type
+        im = ImageOps.exif_transpose(im).convert("RGB")
         im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=85)
         return buf.getvalue(), "image/jpeg"
 
 
-def _pairing_keyboard(device: Device) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton("✅ Approve", callback_data=f"pair:{device.friendly_id}:yes"),
-            InlineKeyboardButton("❌ Deny", callback_data=f"pair:{device.friendly_id}:no"),
-        ]]
-    )
+def strip_mention(text: str, bot_user_id: str | None) -> str:
+    if bot_user_id:
+        text = re.sub(rf"<@{re.escape(bot_user_id)}(\|[^>]*)?>", "", text)
+    return text.strip()
 
 
-def _pairing_text(device: Device) -> str:
-    return (
-        f"A TRMNL wants to connect.\n\nFriendly ID: {device.friendly_id}\nMAC: {device.mac}\n"
-        f"Model: {device.model or '?'}  Firmware: {device.fw_version or '?'}\n\n"
-        "The device screen should show the same friendly ID. Approve it?"
-    )
+@dataclass
+class PendingApproval:
+    future: asyncio.Future[bool]
+    channel: str
+
+
+class SlackChat:
+    """Implements tools.ChatIO for one Slack conversation (optionally one thread in it)."""
+
+    def __init__(self, bot: "CoffeeBot", channel: str, thread_ts: str | None = None):
+        self.bot = bot
+        self.channel = channel
+        self.thread_ts = thread_ts
+
+    async def say(self, text: str, blocks: list[dict] | None = None) -> dict:
+        return await self.bot.client.chat_postMessage(
+            channel=self.channel, thread_ts=self.thread_ts, text=text, blocks=blocks, unfurl_links=False
+        )
+
+    async def send_photo(self, png: bytes, caption: str | None = None) -> None:
+        await self.bot.client.files_upload_v2(
+            channel=self.channel, thread_ts=self.thread_ts, file=png, filename="menu.png",
+            title="Coffee menu", alt_txt="Coffee menu display preview",
+            initial_comment=escape(caption) if caption else None,
+        )
+
+    async def request_approval(self, command: str, reason: str) -> bool:
+        token = secrets.token_hex(8)
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self.bot.pending_approvals[token] = PendingApproval(future, self.channel)
+        # Long commands can't fit in one section block (3000 chars); the full command is in the tool call anyway.
+        shown = command if len(command) <= 2500 else command[:2500] + "\n… (truncated)"
+        text = (
+            f"Claude wants to run a command on the server:\n```{escape(shown)}```\n*Why:* {escape(reason)}"
+        )
+        posted = await self.say(
+            "Claude wants to run a command on the server.",
+            _decision_blocks(text, "approve", token, "✅ Run", "❌ Don't run"),
+        )
+        try:
+            return await asyncio.wait_for(future, APPROVAL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(SlackApiError):
+                timed_out = f"{text}\n\n⌛ No answer in 5 minutes, so the command was not run."
+                await self.bot.client.chat_update(
+                    channel=posted["channel"], ts=posted["ts"], text=timed_out, blocks=[_section(timed_out)]
+                )
+            return False
+        finally:
+            self.bot.pending_approvals.pop(token, None)
 
 
 class CoffeeBot:
     def __init__(
         self,
-        token: str,
-        allowed_user_ids: frozenset[int],
+        bot_token: str,
+        app_token: str,
+        allowed_user_ids: frozenset[str],
         agent: CoffeeAgent,
         services: Services,
         *,
@@ -148,70 +195,58 @@ class CoffeeBot:
         self.agent = agent
         self.svc = services
         self.allowed = allowed_user_ids
+        self.bot_token, self.app_token = bot_token, app_token
         self.http_host, self.http_port = http_host, http_port
         self.server = DeviceServer(
             services.devices, services.renderer.cache, services.renderer, self, services.tz, **server_options
         )
         self.pending_approvals: dict[str, PendingApproval] = {}
-        self._media_groups: dict[str, MediaGroupBuffer] = {}
+        self.bot_user_id: str | None = None
+        self._dm_channels: dict[str, str] = {}
         self._nightly_task: asyncio.Task | None = None
 
-        self.application: Application = (
-            ApplicationBuilder()
-            .token(token)
-            # Needed so approval button presses are handled while a Claude turn is waiting on them.
-            .concurrent_updates(True)
-            .post_init(self._post_init)
-            .post_shutdown(self._post_shutdown)
-            .build()
-        )
-        users = filters.User(user_id=list(allowed_user_ids))
-        app = self.application
-        app.add_handler(CommandHandler(["start", "help"], self.cmd_help, filters=users))
-        app.add_handler(CommandHandler("menu", self.cmd_menu, filters=users))
-        app.add_handler(CommandHandler("new", self.cmd_new, filters=users))
-        app.add_handler(CommandHandler("undo", self.cmd_undo, filters=users))
-        app.add_handler(CommandHandler(["device", "devices"], self.cmd_device, filters=users))
-        app.add_handler(CommandHandler("forget", self.cmd_forget, filters=users))
-        app.add_handler(CallbackQueryHandler(self.on_approval, pattern=r"^approve:"))
-        app.add_handler(CallbackQueryHandler(self.on_pairing, pattern=r"^pair:"))
-        content = filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.Document.IMAGE
-        app.add_handler(MessageHandler(users & content, self.on_message))
-        app.add_handler(MessageHandler(~users, self.on_stranger))
+        self.app = AsyncApp(token=bot_token)
+        self.client: AsyncWebClient = self.app.client
+        self.app.event("message")(self.on_message)
+        self.app.event("app_mention")(self.on_mention)
+        self.app.command(SLASH_COMMAND)(self.on_command)
+        self.app.action(re.compile(r"^approve_(yes|no)$"))(self.on_approval)
+        self.app.action(re.compile(r"^pair_(yes|no)$"))(self.on_pairing)
 
     def run(self) -> None:
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        asyncio.run(self._main())
 
     # ---- lifecycle ----
 
-    async def _post_init(self, app: Application) -> None:
-        await app.bot.set_my_commands(BOT_COMMANDS)
+    async def _main(self) -> None:
+        main_task = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, main_task.cancel)
+
+        auth = await self.client.auth_test()
+        self.bot_user_id = auth["user_id"]
+        log.info("connected to Slack workspace %s as @%s", auth.get("team"), auth.get("user"))
         await self.svc.renderer.start()
+        handler = AsyncSocketModeHandler(self.app, self.app_token)
         try:
-            await self.svc.render()
-            log.info("initial render done")
-        except Exception:
-            log.exception("initial render failed")
-        await self.server.start(self.http_host, self.http_port)
-        self._nightly_task = asyncio.create_task(self._nightly_rerender())
-
-    async def _post_shutdown(self, app: Application) -> None:
-        if self._nightly_task:
-            self._nightly_task.cancel()
-        await self.server.stop()
-        await self.svc.renderer.close()
-
-    # ---- DeviceNotifier (called by the HTTP server) ----
-
-    async def notify_pairing(self, device: Device) -> None:
-        for user_id in self.allowed:
-            await self.application.bot.send_message(
-                user_id, _pairing_text(device), reply_markup=_pairing_keyboard(device)
-            )
-
-    async def notify(self, text: str) -> None:
-        for user_id in self.allowed:
-            await self.application.bot.send_message(user_id, text)
+            try:
+                await self.svc.render()
+                log.info("initial render done")
+            except Exception:
+                log.exception("initial render failed")
+            await self.server.start(self.http_host, self.http_port)
+            self._nightly_task = asyncio.create_task(self._nightly_rerender())
+            await handler.start_async()  # runs until cancelled
+        except asyncio.CancelledError:
+            log.info("shutting down")
+        finally:
+            if self._nightly_task:
+                self._nightly_task.cancel()
+            with contextlib.suppress(Exception):
+                await handler.close_async()
+            await self.server.stop()
+            await self.svc.renderer.close()
 
     async def _nightly_rerender(self) -> None:
         """Re-render just after local midnight so the date and 'days since roast' stay current."""
@@ -225,168 +260,215 @@ class CoffeeBot:
             except Exception:
                 log.exception("nightly re-render failed")
 
-    # ---- commands ----
+    # ---- DeviceNotifier (called by the HTTP server) ----
 
-    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.effective_message.reply_text(HELP_TEXT)
+    async def _dm(self, user_id: str) -> SlackChat:
+        channel = self._dm_channels.get(user_id)
+        if channel is None:
+            resp = await self.client.conversations_open(users=user_id)
+            channel = self._dm_channels[user_id] = resp["channel"]["id"]
+        return SlackChat(self, channel)
 
-    async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def notify_pairing(self, device: Device) -> None:
+        for user_id in self.allowed:
+            dm = await self._dm(user_id)
+            await dm.say(f"A TRMNL ({device.friendly_id}) wants to connect.", _pairing_blocks(device))
+
+    async def notify(self, text: str) -> None:
+        for user_id in self.allowed:
+            dm = await self._dm(user_id)
+            await dm.say(escape(text))
+
+    # ---- slash command ----
+
+    async def on_command(self, ack, command: dict, respond) -> None:
+        await ack()
+        if command.get("user_id") not in self.allowed:
+            log.warning("ignoring %s from unauthorized user %s", SLASH_COMMAND, command.get("user_id"))
+            await respond("Sorry, you're not on this bot's allowlist.")
+            return
+        args = command.get("text", "").split()
+        sub = args[0].lower() if args else "help"
+        chat = SlackChat(self, command["channel_id"])
+        try:
+            await self._dispatch(sub, args[1:], chat)
+        except SlackApiError as exc:
+            # Typically channel_not_found / not_in_channel: the bot can't post where the command was typed.
+            log.warning("%s %s failed: %s", SLASH_COMMAND, sub, exc.response.get("error"))
+            await respond(
+                f"I can't post in this conversation ({exc.response.get('error')}). "
+                f"Use `{SLASH_COMMAND}` in a DM with me, or invite me to this channel."
+            )
+
+    async def _dispatch(self, sub: str, args: list[str], chat: SlackChat) -> None:
+        if sub == "menu":
+            await self.cmd_menu(chat)
+        elif sub == "new":
+            self.agent.reset(chat.channel)
+            await chat.say("Started a fresh conversation. The menu is unchanged.")
+        elif sub == "undo":
+            await self.cmd_undo(chat)
+        elif sub in ("device", "devices"):
+            await self.cmd_device(chat)
+        elif sub == "forget":
+            await self.cmd_forget(chat, args)
+        else:
+            await chat.say(HELP_TEXT)
+
+    async def cmd_menu(self, chat: SlackChat) -> None:
         try:
             result = await self.svc.render()
         except Exception as exc:
-            await update.effective_message.reply_text(f"Render failed: {exc}")
+            await chat.say(escape(f"Render failed: {exc}"))
             return
-        await update.effective_message.reply_photo(result.preview_png, caption=f"Published to {PNG_2BIT}")
+        await chat.send_photo(result.preview_png, f"Published to {PNG_2BIT}")
 
-    async def cmd_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        self.agent.reset(update.effective_chat.id)
-        await update.effective_message.reply_text("Started a fresh conversation. The menu is unchanged.")
-
-    async def cmd_undo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_undo(self, chat: SlackChat) -> None:
         async with self.svc.menu_lock:
             menu = self.svc.store.undo()
         if menu is None:
-            await update.effective_message.reply_text("Nothing to undo.")
+            await chat.say("Nothing to undo.")
             return
         # Claude's history still describes the undone change; start fresh to avoid confusion.
-        self.agent.reset(update.effective_chat.id)
+        self.agent.reset(chat.channel)
         result = await self.svc.render(menu)
-        await update.effective_message.reply_photo(result.preview_png, caption="Reverted the last menu change.")
+        await chat.send_photo(result.preview_png, "Reverted the last menu change.")
 
-    async def cmd_device(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        message = update.effective_message
-        await message.reply_text(format_status(self.svc.devices, self.svc.tz))
+    async def cmd_device(self, chat: SlackChat) -> None:
+        await chat.say(f"```{escape(format_status(self.svc.devices, self.svc.tz))}```")
         for device in self.svc.devices.devices:
             if device.status == "pending":
-                await message.reply_text(_pairing_text(device), reply_markup=_pairing_keyboard(device))
+                await chat.say(f"A TRMNL ({device.friendly_id}) wants to connect.", _pairing_blocks(device))
 
-    async def cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/forget <friendly_id>: remove a device so it has to pair again (e.g. after a denial)."""
-        message = update.effective_message
-        if not context.args:
-            await message.reply_text("Usage: /forget <friendly ID>  (see /device)")
+    async def cmd_forget(self, chat: SlackChat, args: list[str]) -> None:
+        """forget <friendly_id>: remove a device so it has to pair again (e.g. after a denial)."""
+        if not args:
+            await chat.say(f"Usage: `{SLASH_COMMAND} forget <friendly ID>`  (see `{SLASH_COMMAND} device`)")
             return
-        friendly_id = context.args[0].upper()
+        friendly_id = args[0].upper()
         async with self.svc.devices.lock:
             removed = self.svc.devices.remove(friendly_id)
             if removed:
                 self.svc.devices.save()
-        await message.reply_text(
+        await chat.say(escape(
             f"Forgot {friendly_id}. If it's still running, it will ask to pair again."
             if removed else f"No device with friendly ID {friendly_id}."
-        )
+        ))
 
-    async def on_pairing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        query = update.callback_query
-        if query.from_user.id not in self.allowed:
-            await query.answer("Not allowed.")
+    # ---- buttons ----
+
+    async def on_pairing(self, ack, body: dict, respond) -> None:
+        await ack()
+        if body["user"]["id"] not in self.allowed:
+            await respond(text="Not allowed.", response_type="ephemeral", replace_original=False)
             return
-        _, friendly_id, answer = query.data.split(":")
-        approved = answer == "yes"
+        action = body["actions"][0]
+        friendly_id, approved = action["value"], action["action_id"] == "pair_yes"
         async with self.svc.devices.lock:
             device = self.svc.devices.by_friendly_id(friendly_id)
             if device is None or device.status != "pending":
-                state = device.status if device else "gone"
-                await query.answer(f"Already handled ({state}).")
-                await query.edit_message_reply_markup(None)
-                return
-            device.status = "approved" if approved else "denied"
-            self.svc.devices.save()
-        await query.answer("Approved" if approved else "Denied")
-        outcome = (
-            "✅ Approved. The menu appears on the display at its next check-in (within a minute)."
-            if approved else f"❌ Denied. Use /forget {friendly_id} if you want to let it pair again later."
-        )
-        await query.edit_message_text(f"{query.message.text}\n\n{outcome}")
+                outcome = f"Already handled ({device.status if device else 'gone'})."
+            else:
+                device.status = "approved" if approved else "denied"
+                self.svc.devices.save()
+                outcome = (
+                    "✅ Approved. The menu appears on the display at its next check-in (within a minute)."
+                    if approved else
+                    f"❌ Denied. Use `{SLASH_COMMAND} forget {friendly_id}` if you want to let it pair again later."
+                )
+        await self._resolve(body, outcome)
 
-    async def on_approval(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        query = update.callback_query
-        if query.from_user.id not in self.allowed:
-            await query.answer("Not allowed.")
+    async def on_approval(self, ack, body: dict, respond) -> None:
+        await ack()
+        if body["user"]["id"] not in self.allowed:
+            await respond(text="Not allowed.", response_type="ephemeral", replace_original=False)
             return
-        _, token, answer = query.data.split(":")
-        pending = self.pending_approvals.get(token)
+        action = body["actions"][0]
+        pending = self.pending_approvals.get(action["value"])
         if pending is None or pending.future.done():
-            await query.answer("This request has expired.")
-            await query.edit_message_reply_markup(None)
+            await self._resolve(body, "This request has expired.")
             return
-        approved = answer == "yes"
+        approved = action["action_id"] == "approve_yes"
         pending.future.set_result(approved)
-        await query.answer("Running…" if approved else "Cancelled.")
-        await query.edit_message_text(f"{query.message.text}\n\n{'✅ Approved' if approved else '❌ Declined'}")
+        await self._resolve(body, "✅ Approved" if approved else "❌ Declined")
 
-    async def on_stranger(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user = update.effective_user
-        log.warning("ignoring message from unauthorized user %s (%s)", user.id if user else "?", user.username if user else "")
+    async def _resolve(self, body: dict, outcome: str) -> None:
+        text, blocks = _resolved_blocks(body, outcome)
+        await self.client.chat_update(channel=body["channel"]["id"], ts=body["message"]["ts"], text=text, blocks=blocks)
 
     # ---- messages ----
 
-    async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        message = update.effective_message
-        if message.media_group_id:
-            # Albums arrive as separate updates; gather them into one turn.
-            group_id = message.media_group_id
-            buffer = self._media_groups.get(group_id)
-            if buffer is not None:
-                buffer.messages.append(message)
-                return
-            buffer = self._media_groups[group_id] = MediaGroupBuffer([message])
-            await asyncio.sleep(MEDIA_GROUP_WAIT_SECONDS)
-            del self._media_groups[group_id]
-            messages = buffer.messages
-        else:
-            messages = [message]
+    async def on_message(self, event: dict) -> None:
+        """Direct messages to the bot. (Channel messages arrive as app_mention instead.)"""
+        if event.get("channel_type") != "im" or event.get("subtype") not in USER_SUBTYPES or event.get("bot_id"):
+            return
+        await self._handle_user_message(event, thread_ts=event.get("thread_ts"))
 
+    async def on_mention(self, event: dict) -> None:
+        """@coffee-bot in a channel. Replies go in a thread so the channel stays tidy."""
+        if event.get("channel", "").startswith("D"):
+            return  # DMs are handled by on_message
+        await self._handle_user_message(event, thread_ts=event.get("thread_ts") or event["ts"])
+
+    async def _handle_user_message(self, event: dict, thread_ts: str | None) -> None:
+        user = event.get("user")
+        if user not in self.allowed:
+            log.warning("ignoring message from unauthorized user %s", user)
+            return
+        chat = SlackChat(self, event["channel"], thread_ts)
         try:
-            content = await self._to_content(messages)
+            content = await self._to_content(event)
         except Exception as exc:
             log.exception("failed to read message")
-            await message.reply_text(f"Sorry, I couldn't read that: {exc}")
+            await chat.say(escape(f"Sorry, I couldn't read that: {exc}"))
             return
-        if not content:
-            return
-        await self._run_turn(message, content)
+        if content:
+            await self._run_turn(chat, event["ts"], content)
 
-    async def _to_content(self, messages: list[Message]) -> list[dict]:
+    async def _to_content(self, event: dict) -> list[dict]:
         content: list[dict] = []
-        texts: list[str] = []
-        for m in messages:
-            file_id, media_type = None, None
-            if m.photo:
-                file_id, media_type = m.photo[-1].file_id, "image/jpeg"  # largest size
-            elif m.document and (m.document.mime_type or "").startswith("image/"):
-                file_id, media_type = m.document.file_id, m.document.mime_type
-            if file_id:
-                tg_file = await self.application.bot.get_file(file_id)
-                data, media_type = _prepare_image(bytes(await tg_file.download_as_bytearray()), media_type)
-                content.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode()},
-                })
-            if m.text:
-                texts.append(m.text)
-            if m.caption:
-                texts.append(m.caption)
-        if texts:
-            content.append({"type": "text", "text": "\n".join(texts)})
+        for f in event.get("files") or []:
+            if f.get("file_access") == "check_file_info":
+                f = (await self.client.files_info(file=f["id"]))["file"]
+            mimetype = f.get("mimetype") or ""
+            if not mimetype.startswith("image/"):
+                continue
+            data = await self._download(f)
+            data, media_type = _prepare_image(data, mimetype)
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode()},
+            })
+        text = unescape(strip_mention(event.get("text") or "", self.bot_user_id))
+        if text:
+            content.append({"type": "text", "text": text})
         return content
 
-    async def _run_turn(self, message: Message, content: list[dict]) -> None:
-        chat_id = message.chat_id
-        typing = asyncio.create_task(self._keep_typing(chat_id))
+    async def _download(self, f: dict) -> bytes:
+        if (f.get("size") or 0) > MAX_DOWNLOAD_BYTES:
+            raise ValueError(f"{f.get('name', 'file')} is too large ({f['size'] // 1_000_000} MB)")
+        url = f.get("url_private_download") or f.get("url_private")
+        if not url:
+            raise ValueError(f"no download URL for {f.get('name', 'file')}")
+        headers = {"Authorization": f"Bearer {self.bot_token}"}
+        async with aiohttp.ClientSession() as session, session.get(url, headers=headers) as resp:
+            resp.raise_for_status()
+            if not resp.content_type.startswith("image/") and resp.content_type != "application/octet-stream":
+                # Slack answers with an HTML login page when the token lacks files:read.
+                raise ValueError("Slack didn't return the image (does the app have the files:read scope?)")
+            return await resp.read()
+
+    async def _run_turn(self, chat: SlackChat, message_ts: str, content: list[dict]) -> None:
+        # Slack has no typing indicator for bots; a reaction on the user's message shows we're working.
+        with contextlib.suppress(SlackApiError):
+            await self.client.reactions_add(channel=chat.channel, timestamp=message_ts, name=WORKING_REACTION)
         try:
-            reply = await self.agent.handle(chat_id, content, TelegramChat(self, chat_id))
+            reply = await self.agent.handle(chat.channel, content, chat)
         except Exception:
             log.exception("turn failed")
             reply = "Sorry, something went wrong on my end. Check the server logs."
         finally:
-            typing.cancel()
-        for i in range(0, len(reply), TELEGRAM_TEXT_LIMIT):
-            await self.application.bot.send_message(chat_id, reply[i : i + TELEGRAM_TEXT_LIMIT])
-
-    async def _keep_typing(self, chat_id: int) -> None:
-        with contextlib.suppress(asyncio.CancelledError):
-            while True:
-                with contextlib.suppress(Exception):
-                    await self.application.bot.send_chat_action(chat_id, ChatAction.TYPING)
-                await asyncio.sleep(4.5)
+            with contextlib.suppress(SlackApiError):
+                await self.client.reactions_remove(channel=chat.channel, timestamp=message_ts, name=WORKING_REACTION)
+        for i in range(0, len(reply), SLACK_TEXT_LIMIT):
+            await chat.say(escape(reply[i : i + SLACK_TEXT_LIMIT]))

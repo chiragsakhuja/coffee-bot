@@ -1,5 +1,5 @@
 [Unit]
-Description=Coffee Bot (Telegram -> Claude -> TRMNL coffee menu)
+Description=Coffee Bot (Slack -> Claude -> TRMNL coffee menu)
 Wants=network-online.target
 After=network-online.target
 

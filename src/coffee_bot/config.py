@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -13,8 +14,9 @@ TEMPLATES_DIR = PROJECT_ROOT / "templates"
 
 @dataclass(frozen=True)
 class Config:
-    telegram_token: str
-    allowed_user_ids: frozenset[int]
+    slack_bot_token: str
+    slack_app_token: str
+    allowed_user_ids: frozenset[str]
     model: str
     data_dir: Path
     output_dir: Path
@@ -36,15 +38,18 @@ def _resolve(path: str) -> Path:
 def load_config() -> Config:
     load_dotenv(PROJECT_ROOT / ".env")
 
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
-        raise SystemExit("TELEGRAM_BOT_TOKEN is not set (see .env.example)")
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    if not bot_token.startswith("xoxb-"):
+        raise SystemExit("SLACK_BOT_TOKEN must be set to the app's Bot User OAuth Token (xoxb-…, see .env.example)")
+    app_token = os.environ.get("SLACK_APP_TOKEN", "").strip()
+    if not app_token.startswith("xapp-"):
+        raise SystemExit("SLACK_APP_TOKEN must be set to an app-level token with connections:write (xapp-…)")
 
     raw_ids = os.environ.get("ALLOWED_USER_IDS", "")
-    try:
-        allowed = frozenset(int(x) for x in raw_ids.replace(" ", "").split(",") if x)
-    except ValueError:
-        raise SystemExit("ALLOWED_USER_IDS must be comma-separated numeric Telegram user IDs")
+    allowed = frozenset(x.upper() for x in raw_ids.replace(" ", "").split(",") if x)
+    bad = sorted(x for x in allowed if not re.fullmatch(r"[UW][A-Z0-9]{6,}", x))
+    if bad:
+        raise SystemExit(f"ALLOWED_USER_IDS must be Slack member IDs like U012AB3CDE, got: {', '.join(bad)}")
     if not allowed:
         raise SystemExit("ALLOWED_USER_IDS is empty; the bot would ignore everyone")
 
@@ -57,7 +62,8 @@ def load_config() -> Config:
         raise SystemExit("IMAGE_FORMAT must be one of: auto, 2bit, 1bit, bmp")
 
     return Config(
-        telegram_token=token,
+        slack_bot_token=bot_token,
+        slack_app_token=app_token,
         allowed_user_ids=allowed,
         model=os.environ.get("MODEL", "claude-opus-5-5"),
         data_dir=_resolve(os.environ.get("DATA_DIR", "./data")),

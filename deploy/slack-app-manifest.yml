@@ -1,0 +1,41 @@
+# Paste this at https://api.slack.com/apps → Create New App → From an app manifest.
+# Socket Mode means Slack never connects to your server: the bot dials out over a websocket,
+# so it works from a home LAN with no public URL, port forwarding, or TLS certificate.
+display_information:
+  name: Coffee Bot
+  description: Keeps the coffee menu on my TRMNL e-ink display up to date.
+  background_color: "#3b2a20"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: coffee-bot
+    always_online: true
+  slash_commands:
+    - command: /coffee
+      description: Coffee menu commands
+      usage_hint: "menu | new | undo | device | forget <id> | help"
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read  # @coffee-bot in channels
+      - chat:write         # replies, previews, approval buttons
+      - commands           # /coffee
+      - files:read         # download bag photos you send
+      - files:write        # upload menu previews
+      - im:history         # read your DMs to the bot
+      - im:write           # open a DM for pairing requests and battery alerts
+      - reactions:write    # ⏳ on your message while Claude is working
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

@@ -54,7 +54,7 @@ async def test_tool_turn_then_followup(svc):
     agent = CoffeeAgent(client, "claude-opus-5-5", svc)
     chat = FakeChat()
 
-    reply = await agent.handle(1, [{"type": "text", "text": "new bag, green bin"}], chat)
+    reply = await agent.handle("D1", [{"type": "text", "text": "new bag, green bin"}], chat)
     assert reply == "Added Onyx Geisha."
     assert svc.store.load().coffees[0].container == "green"
 
@@ -70,7 +70,7 @@ async def test_tool_turn_then_followup(svc):
     assert tool_result["type"] == "tool_result" and tool_result["tool_use_id"] == "toolu_1"
 
     # Second turn resends the full, valid history (user, assistant, user, assistant, user)
-    reply = await agent.handle(1, [{"type": "text", "text": "which bin?"}], chat)
+    reply = await agent.handle("D1", [{"type": "text", "text": "which bin?"}], chat)
     assert reply == "It's in the green container."
     roles = [m["role"] for m in requests[2][1]["messages"]]
     assert roles == ["user", "assistant", "user", "assistant", "user"]
@@ -83,6 +83,6 @@ async def test_refusal_is_not_committed(svc):
 
     client = AsyncAnthropic(api_key="test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     agent = CoffeeAgent(client, "claude-opus-5-5", svc)
-    reply = await agent.handle(1, [{"type": "text", "text": "hi"}], FakeChat())
+    reply = await agent.handle("D1", [{"type": "text", "text": "hi"}], FakeChat())
     assert "can't help" in reply
-    assert agent._conversations[1].messages == []
+    assert agent._conversations["D1"].messages == []

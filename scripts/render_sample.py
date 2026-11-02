@@ -1,4 +1,4 @@
-"""Render a menu JSON to PNGs without Telegram, for iterating on the template.
+"""Render a menu JSON to PNGs without Slack, for iterating on the template.
 
 Usage:
     python scripts/render_sample.py                         # fixture, 1-4 coffee variants -> output/samples/

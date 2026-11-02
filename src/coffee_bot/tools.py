@@ -1,4 +1,4 @@
-"""Tools Claude can call. Built per turn so they can talk back to the right Telegram chat."""
+"""Tools Claude can call. Built per turn so they can talk back to the right Slack conversation."""
 
 from __future__ import annotations
 
@@ -290,7 +290,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
 
     @beta_async_tool
     async def render_preview(caption: str | None = None) -> str:
-        """Render the display image from the current menu and template, and send it to the user in Telegram.
+        """Render the display image from the current menu and template, and send it to the user in Slack.
         Call this after changing the menu or the template so the user can see the result.
 
         Args:
@@ -352,7 +352,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
     @beta_async_tool
     async def run_shell_command(command: str, reason: str) -> str:
         """Run a shell command on the server, in the project directory. The user must approve every
-        command in Telegram before it runs; if they decline, don't retry the same command.
+        command in Slack before it runs; if they decline, don't retry the same command.
         Output is truncated and commands time out after 60 seconds.
 
         Args:

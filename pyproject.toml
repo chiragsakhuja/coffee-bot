@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "coffee-bot"
 version = "0.1.0"
-description = "Telegram bot that uses Claude to maintain a coffee menu rendered for a TRMNL e-ink display"
+description = "Slack bot that uses Claude to maintain a coffee menu rendered for a TRMNL e-ink display"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=1.9",
-    "python-telegram-bot>=22.0",
+    "slack-bolt>=1.21",
+    "pillow-heif>=0.18",
     "jinja2>=3.1",
     "playwright>=1.50",
     "pillow>=11.0",

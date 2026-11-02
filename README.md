@@ -1,9 +1,9 @@
 # coffee-bot
 
-A Telegram bot that keeps a coffee menu on a [TRMNL](https://trmnl.com) OG e-ink display up to date. Send it photos of coffee bags and notes about brew recipes. Claude pulls out the details, updates the menu, and renders an 800×480 grayscale image. The bot also *is* the TRMNL's server: it implements the BYOS device protocol (`/api/setup`, `/api/display`, `/api/log`), so the display pulls the menu directly from it.
+A Slack bot that keeps a coffee menu on a [TRMNL](https://trmnl.com) OG e-ink display up to date. Send it photos of coffee bags and notes about brew recipes. Claude pulls out the details, updates the menu, and renders an 800×480 grayscale image. The bot also *is* the TRMNL's server: it implements the BYOS device protocol (`/api/setup`, `/api/display`, `/api/log`), so the display pulls the menu directly from it.
 
 ```
- Telegram ──► bot.py ──► agent.py (Claude, tool runner) ──► tools.py
+ Slack ─────► bot.py ──► agent.py (Claude, tool runner) ──► tools.py
  (you)          ▲                                              │
                 │ previews, questions, approve buttons,        ▼
                 │ pairing requests, battery alerts      store.py (data/menu.json)
@@ -28,11 +28,13 @@ Each coffee (up to 4) shows its **roaster and name**, **roast date and days sinc
 - Ask for layout changes: *"make the tasting notes bigger"*. The bot edits `templates/` and sends a preview.
 - Ask for server tasks: *"how much disk is free?"*. Every shell command needs your approval via a button.
 - Ask about the display: *"how's the battery?"*, *"refresh every 30 minutes"*, *"night mode 11pm to 6am"*.
-- `/menu` shows the current image, `/undo` reverts the last menu change, `/new` starts a fresh conversation, `/device` shows the TRMNL's status, `/forget <id>` un-pairs a device.
+- `/coffee menu` shows the current image, `/coffee undo` reverts the last menu change, `/coffee new` starts a fresh conversation, `/coffee device` shows the TRMNL's status, `/coffee forget <id>` un-pairs a device.
+
+DM the bot (**Apps → Coffee Bot** in Slack's sidebar), or invite it to a channel and @mention it there; it replies in a thread.
 
 ## The TRMNL server
 
-Point the device's **API server** (in its Wi-Fi setup page) at `http://<server-ip>:9157`. The first time it connects, the bot asks you in Telegram to approve it. After that, it gets the menu as a 2-bit grayscale PNG (or 1-bit for older firmware). The filename is a content hash, so the device only redraws when the menu changed. See [docs/SETUP.md §8–10](docs/SETUP.md#8-connect-the-trmnl) for setup, curl recipes, and `scripts/fake_device.py`, which simulates a device for testing.
+Point the device's **API server** (in its Wi-Fi setup page) at `http://<server-ip>:9157`. The first time it connects, the bot DMs you in Slack to approve it. After that, it gets the menu as a 2-bit grayscale PNG (or 1-bit for older firmware). The filename is a content hash, so the device only redraws when the menu changed. See [docs/SETUP.md §8–10](docs/SETUP.md#8-connect-the-trmnl) for setup, curl recipes, and `scripts/fake_device.py`, which simulates a device for testing.
 
 ## Quick start (development)
 
@@ -44,7 +46,7 @@ cp .env.example .env   # fill in tokens, see docs/SETUP.md
 .venv/bin/python -m coffee_bot
 ```
 
-Iterate on the template without Telegram:
+Iterate on the template without Slack:
 
 ```bash
 .venv/bin/python scripts/render_sample.py   # renders 0-4 coffee variants into output/samples/
@@ -52,13 +54,13 @@ Iterate on the template without Telegram:
 .venv/bin/python scripts/fake_device.py     # simulate a TRMNL against the running bot
 ```
 
-Full server setup (BotFather, user IDs, systemd, TRMNL output formats): **[docs/SETUP.md](docs/SETUP.md)**.
+Full server setup (Slack app, member IDs, systemd, TRMNL output formats): **[docs/SETUP.md](docs/SETUP.md)**.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `src/coffee_bot/bot.py` | Telegram handlers, allowlist, album batching, approval buttons, device pairing, nightly re-render; starts the HTTP server |
+| `src/coffee_bot/bot.py` | Slack handlers (Socket Mode), allowlist, `/coffee` command, approval buttons, device pairing, nightly re-render; starts the HTTP server |
 | `src/coffee_bot/server.py` | TRMNL BYOS HTTP endpoints (aiohttp) |
 | `src/coffee_bot/devices.py` | Paired devices, telemetry, refresh/night schedule (`data/devices.json`) |
 | `src/coffee_bot/agent.py` | Claude conversation per chat (system prompt, tool runner, history) |
@@ -70,3 +72,4 @@ Full server setup (BotFather, user IDs, systemd, TRMNL output formats): **[docs/
 | `templates/` | `menu.html.j2` + `menu.css`, the display design (the bot can edit these) |
 | `scripts/fake_device.py` | Simulated TRMNL for testing the endpoints |
 | `deploy/coffee-bot.service` | systemd unit |
+| `deploy/slack-app-manifest.yml` | Slack app manifest (scopes, events, `/coffee`, Socket Mode) |

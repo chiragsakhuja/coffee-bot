@@ -7,7 +7,7 @@
     python scripts/fake_device.py --reset                          # forget the saved key, pair again
 
 Flow: /api/setup (key saved to a state file) -> /api/display (waits while the server says 202,
-i.e. until you tap Approve in Telegram) -> downloads image_url and checks it against the OG's
+i.e. until you click Approve in Slack) -> downloads image_url and checks it against the OG's
 limits -> POSTs a sample /api/log entry.
 """
 
@@ -91,7 +91,7 @@ def main() -> None:
         body = json.loads(raw or b"{}")
         print(f"  HTTP {status}: {json.dumps(body)}")
         if status != 200 or body.get("status") != 200:
-            fail("setup refused (device denied? use /forget <id> in Telegram, then --reset)")
+            fail("setup refused (device denied? use /coffee forget <id> in Slack, then --reset)")
         state = {"api_key": body["api_key"], "friendly_id": body["friendly_id"]}
         state_file.write_text(json.dumps(state))
         ok(f"paired as friendly ID {state['friendly_id']} (key saved to {state_file})")
@@ -114,7 +114,7 @@ def main() -> None:
         if body.get("status") == 202:
             if time.monotonic() > deadline:
                 fail("still waiting for approval")
-            print(f"  … waiting for approval: tap Approve for {state['friendly_id']} in Telegram")
+            print(f"  … waiting for approval: click Approve for {state['friendly_id']} in Slack")
             time.sleep(5)
             continue
         if body.get("status") == 500:
@@ -140,7 +140,7 @@ def main() -> None:
     if status not in (200, 204):
         fail(f"log returned HTTP {status}")
     ok("log accepted")
-    print("\nAll checks passed. Try /device in Telegram.")
+    print("\nAll checks passed. Try /coffee device in Slack.")
 
 
 if __name__ == "__main__":
