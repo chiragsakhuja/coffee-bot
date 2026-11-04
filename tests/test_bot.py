@@ -149,8 +149,8 @@ async def test_photo_is_downloaded_and_sent_as_image(make_bot, monkeypatch):
         ],
     })
     [(_, content)] = agent.turns
-    assert [c["type"] for c in content] == ["image", "text"]
-    assert content[0]["source"]["media_type"] == "image/png"
+    assert [c["type"] for c in content] == ["image_url", "text"]
+    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 async def test_approval_button_resolves_pending_command(make_bot):

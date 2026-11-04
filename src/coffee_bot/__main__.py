@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
-from .agent import CoffeeAgent
+from .agent import OPENROUTER_BASE_URL, CoffeeAgent
 from .bot import CoffeeBot
 from .config import load_config
 from .devices import DeviceRegistry
@@ -34,7 +34,11 @@ def main() -> None:
         tz=cfg.timezone,
         devices=DeviceRegistry(cfg.data_dir),
     )
-    agent = CoffeeAgent(AsyncAnthropic(), cfg.model, services)
+    agent = CoffeeAgent(
+        AsyncOpenAI(base_url=OPENROUTER_BASE_URL, api_key=cfg.openrouter_api_key),
+        cfg.model,
+        services,
+    )
     CoffeeBot(
         cfg.slack_bot_token,
         cfg.slack_app_token,

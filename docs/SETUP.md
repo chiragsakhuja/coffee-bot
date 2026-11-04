@@ -4,7 +4,7 @@ This guide takes you from nothing to a running bot on a Linux server with system
 
 1. [Creating the Slack app](#1-create-the-slack-app)
 2. [Finding your Slack member ID](#2-find-your-slack-member-id)
-3. [Getting an Anthropic API key](#3-get-an-anthropic-api-key)
+3. [Getting an OpenRouter API key](#3-get-an-openrouter-api-key)
 4. [Installing on the server](#4-install-on-the-server)
 5. [Configuring `.env`](#5-configure-env)
 6. [First run and smoke test](#6-first-run-and-smoke-test)
@@ -52,12 +52,12 @@ The bot ignores everyone except the Slack member IDs you allow. A member ID look
 
 To let several people use the bot, collect everyone's ID (same steps on their profile) and separate them with commas.
 
-## 3. Get an Anthropic API key
+## 3. Get an OpenRouter API key
 
-1. Sign in at <https://console.anthropic.com/>.
-2. Add billing under **Settings → Billing**. The bot uses Claude Opus 5.5; a typical message costs a few cents, a bit more with photos.
-3. Go to **Settings → API Keys → Create Key**, name it `coffee-bot`, and copy the key (`sk-ant-...`). It's shown only once.
-4. Optional: set a monthly spend limit under **Settings → Limits**.
+1. Sign in at <https://openrouter.ai/>.
+2. Add credits under **Credits**. By default the bot uses `anthropic/claude-opus-5-5`; a typical message costs a few cents, a bit more with photos. Any OpenRouter model that supports tool calling and image input works (set `MODEL`).
+3. Go to **Keys → Create Key**, name it `coffee-bot`, and copy the key (`sk-or-v1-...`). It's shown only once.
+4. Optional: set a credit limit on the key when you create it.
 
 ## 4. Install on the server
 
@@ -106,10 +106,10 @@ sudo -u coffeebot nano .env
 | `SLACK_BOT_TOKEN` | `xoxb-...` | Bot User OAuth Token, from step 1 |
 | `SLACK_APP_TOKEN` | `xapp-...` | App-level token with `connections:write`, from step 1 |
 | `ALLOWED_USER_IDS` | `U012AB3CDE,U045FG6HIJ` | Slack member IDs from step 2, comma-separated |
-| `ANTHROPIC_API_KEY` | `sk-ant-...` | From step 3 |
+| `OPENROUTER_API_KEY` | `sk-or-v1-...` | From step 3 |
 | `OUTPUT_DIR` | `/var/lib/coffee-bot/output` | Copies of the rendered images (handy for debugging; the device is served from memory) |
 | `DATA_DIR` | `/var/lib/coffee-bot/data` | `menu.json`, `devices.json`, undo history |
-| `MODEL` | `claude-opus-5-5` | Claude model |
+| `MODEL` | `anthropic/claude-opus-5-5` | OpenRouter model slug; must support tool calling and image input |
 | `TIMEZONE` | `America/Los_Angeles` | IANA name. Used for "days since roast", the nightly re-render, and night mode |
 | `HTTP_HOST` | `0.0.0.0` | Address the TRMNL server listens on (`0.0.0.0` = all interfaces) |
 | `HTTP_PORT` | `9157` | Port the TRMNL server listens on |
@@ -367,7 +367,7 @@ The default is every 15 minutes, with night mode off. A shorter interval drains 
 | `Executable doesn't exist at .../chrome-headless-shell` | Chromium isn't installed where the service looks. Re-run the `playwright install` step with the same `PLAYWRIGHT_BROWSERS_PATH` as the unit file. |
 | Chromium crashes with missing `.so` libraries | Run `sudo .venv/bin/playwright install-deps chromium`. |
 | Text looks like a different font than expected | Install `fonts-inter` (or edit `font-family` in `templates/menu.css`). |
-| `Claude API returned an error (401)` | Bad `ANTHROPIC_API_KEY`. |
+| `model API returned an error (401)` | Bad `OPENROUTER_API_KEY`. |
 | `(429)` or `(529)` errors | Rate-limited or overloaded. Wait a minute and retry. |
 | Display shows an old image | Menu changes appear at the next wake. Check `/coffee device` for "Next wake". `/coffee menu` forces a re-render. |
 | Device shows "MAC not registered" or similar | The device was denied. `/coffee forget <friendly ID>`, then wait for it to ask again. |
@@ -385,4 +385,4 @@ The default is every 15 minutes, with night mode off. A shorter interval drains 
 - **Devices must be approved** in Slack before they get the menu. Each one gets its own random API key, and display/log requests are checked against it (and the MAC). The HTTP server is plain HTTP and meant for your **home LAN only**. Don't port-forward 9157 to the internet. Images are served without auth (their names are content hashes); they contain only your coffee menu.
 - **File edits are sandboxed.** Claude can *write* only in `templates/` and *read* only in `templates/` and `DATA_DIR`. The menu itself is changed only through validated tools.
 - **Shell commands need your approval.** Every command is shown to you with a Run / Don't run button and times out after 5 minutes without an answer. Approved commands run in the project directory with a 60 s timeout. Under systemd they also run inside the unit's sandbox: read-only filesystem except `/var/lib/coffee-bot` and `templates/`, no access to `/home`, and no privilege escalation. Read each command before approving it. Text in a photo could try to trick the model into proposing a harmful command, and the approval step is your safeguard.
-- Keep `.env` at `chmod 600`. Rotate the Slack tokens (see step 1) or the Anthropic key if any of them leaks. On a company workspace, remember that Slack messages and files (including bag photos and approved shell commands) are retained under your workspace's policies.
+- Keep `.env` at `chmod 600`. Rotate the Slack tokens (see step 1) or the OpenRouter key if any of them leaks. On a company workspace, remember that Slack messages and files (including bag photos and approved shell commands) are retained under your workspace's policies.

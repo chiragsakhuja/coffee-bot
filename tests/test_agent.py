@@ -1,11 +1,11 @@
-"""Drives CoffeeAgent through the real SDK tool runner against a mocked Messages API."""
+"""Drives CoffeeAgent through the real OpenAI SDK against a mocked OpenRouter chat-completions API."""
 
 import json
 from zoneinfo import ZoneInfo
 
 import httpx2 as httpx
 import pytest
-from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
 from coffee_bot.agent import CoffeeAgent
 from coffee_bot.devices import DeviceRegistry
@@ -15,12 +15,22 @@ from coffee_bot.tools import Services
 from test_tools import FakeChat, FakeRenderer
 
 
-def api_message(content, stop_reason):
+def api_message(content=None, finish_reason="stop", tool_calls=None):
+    message = {"role": "assistant", "content": content}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
     return {
-        "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
-        "content": content, "stop_reason": stop_reason, "stop_sequence": None,
-        "usage": {"input_tokens": 10, "output_tokens": 10},
+        "id": "gen-1", "object": "chat.completion", "created": 0, "model": "anthropic/claude-opus-5-5",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
     }
+
+
+def make_client(handler):
+    return AsyncOpenAI(
+        base_url="https://openrouter.test/api/v1", api_key="test",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
 
 
 @pytest.fixture
@@ -36,53 +46,87 @@ def svc(tmp_path):
 
 async def test_tool_turn_then_followup(svc):
     requests = []
+    args = {"roaster": "Onyx", "name": "Geisha", "roast_date": "2026-09-20",
+            "container": "green", "tasting_notes": ["jasmine"]}
     replies = [
-        api_message([{
-            "type": "tool_use", "id": "toolu_1", "name": "add_coffee",
-            "input": {"roaster": "Onyx", "name": "Geisha", "roast_date": "2026-09-20",
-                      "container": "green", "tasting_notes": ["jasmine"]},
-        }], "tool_use"),
-        api_message([{"type": "text", "text": "Added Onyx Geisha."}], "end_turn"),
-        api_message([{"type": "text", "text": "It's in the green container."}], "end_turn"),
+        api_message(None, "tool_calls", [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "add_coffee", "arguments": json.dumps(args)},
+        }]),
+        api_message("Added Onyx Geisha."),
+        api_message("It's in the green container."),
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requests.append((request.headers, json.loads(request.content)))
+        requests.append(json.loads(request.content))
         return httpx.Response(200, json=replies[len(requests) - 1])
 
-    client = AsyncAnthropic(api_key="test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-    agent = CoffeeAgent(client, "claude-opus-5-5", svc)
+    agent = CoffeeAgent(make_client(handler), "anthropic/claude-opus-5-5", svc)
     chat = FakeChat()
 
     reply = await agent.handle("D1", [{"type": "text", "text": "new bag, green bin"}], chat)
     assert reply == "Added Onyx Geisha."
     assert svc.store.load().coffees[0].container == "green"
 
-    headers, body = requests[0]
-    assert "server-side-fallback-2026-07-01" in headers["anthropic-beta"]
-    assert body["fallbacks"] == "default"
-    assert body["thinking"] == {"type": "adaptive"}
-    assert body["output_config"] == {"effort": "medium"}
-    assert "<current_menu>" in body["messages"][0]["content"][0]["text"]
+    body = requests[0]
+    assert body["model"] == "anthropic/claude-opus-5-5"
+    assert body["messages"][0]["role"] == "system"
+    assert "<current_menu>" in body["messages"][1]["content"][0]["text"]
+    tool_names = {t["function"]["name"] for t in body["tools"]}
+    assert {"add_coffee", "render_preview", "set_refresh_schedule"} <= tool_names
+    add = next(t for t in body["tools"] if t["function"]["name"] == "add_coffee")["function"]
+    assert add["parameters"]["required"] == ["roaster", "name", "roast_date", "container", "tasting_notes"]
+    assert add["parameters"]["properties"]["container"]["enum"] == ["black", "white", "green", "blue"]
+    assert "YYYY-MM-DD" in add["parameters"]["properties"]["roast_date"]["description"]
 
-    # Tool result was sent back with the tool_use id
-    tool_result = requests[1][1]["messages"][-1]["content"][0]
-    assert tool_result["type"] == "tool_result" and tool_result["tool_use_id"] == "toolu_1"
+    # Tool result was sent back with the tool call id
+    tool_result = requests[1]["messages"][-1]
+    assert tool_result["role"] == "tool" and tool_result["tool_call_id"] == "call_1"
+    assert "onyx-geisha" in tool_result["content"]
 
-    # Second turn resends the full, valid history (user, assistant, user, assistant, user)
+    # Second turn resends the full, valid history
     reply = await agent.handle("D1", [{"type": "text", "text": "which bin?"}], chat)
     assert reply == "It's in the green container."
-    roles = [m["role"] for m in requests[2][1]["messages"]]
-    assert roles == ["user", "assistant", "user", "assistant", "user"]
-    assert "<current_menu>" not in requests[2][1]["messages"][-1]["content"][0]["text"]
+    roles = [m["role"] for m in requests[2]["messages"]]
+    assert roles == ["system", "user", "assistant", "tool", "assistant", "user"]
+    assert "<current_menu>" not in requests[2]["messages"][-1]["content"][0]["text"]
 
 
-async def test_refusal_is_not_committed(svc):
+async def test_tool_errors_go_back_to_the_model(svc):
+    requests = []
+    bad = {"roaster": "A", "name": "B", "roast_date": "last week", "container": "green", "tasting_notes": []}
+    replies = [
+        api_message(None, "tool_calls", [{
+            "id": "call_1", "type": "function", "function": {"name": "add_coffee", "arguments": json.dumps(bad)},
+        }]),
+        api_message("What's the roast date?"),
+    ]
+
     def handler(request):
-        return httpx.Response(200, json=api_message([], "refusal"))
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=replies[len(requests) - 1])
 
-    client = AsyncAnthropic(api_key="test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-    agent = CoffeeAgent(client, "claude-opus-5-5", svc)
+    agent = CoffeeAgent(make_client(handler), "m", svc)
+    reply = await agent.handle("D1", [{"type": "text", "text": "hi"}], FakeChat())
+    assert reply == "What's the roast date?"
+    assert "YYYY-MM-DD" in requests[1]["messages"][-1]["content"]
+    assert svc.store.load().coffees == []
+
+
+async def test_content_filter_is_not_committed(svc):
+    def handler(request):
+        return httpx.Response(200, json=api_message("", "content_filter"))
+
+    agent = CoffeeAgent(make_client(handler), "m", svc)
     reply = await agent.handle("D1", [{"type": "text", "text": "hi"}], FakeChat())
     assert "can't help" in reply
     assert agent._conversations["D1"].messages == []
+
+
+async def test_api_error_is_reported(svc):
+    def handler(request):
+        return httpx.Response(401, json={"error": {"message": "bad key", "code": 401}})
+
+    agent = CoffeeAgent(make_client(handler), "m", svc)
+    reply = await agent.handle("D1", [{"type": "text", "text": "hi"}], FakeChat())
+    assert "401" in reply

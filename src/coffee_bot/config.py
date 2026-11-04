@@ -17,6 +17,7 @@ class Config:
     slack_bot_token: str
     slack_app_token: str
     allowed_user_ids: frozenset[str]
+    openrouter_api_key: str
     model: str
     data_dir: Path
     output_dir: Path
@@ -53,9 +54,9 @@ def load_config() -> Config:
     if not allowed:
         raise SystemExit("ALLOWED_USER_IDS is empty; the bot would ignore everyone")
 
-    # The Anthropic client reads ANTHROPIC_API_KEY itself; fail early if it's missing.
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise SystemExit("ANTHROPIC_API_KEY is not set (see .env.example)")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise SystemExit("OPENROUTER_API_KEY is not set (see .env.example)")
 
     image_format = os.environ.get("IMAGE_FORMAT", "auto").strip().lower()
     if image_format not in ("auto", "2bit", "1bit", "bmp"):
@@ -65,7 +66,8 @@ def load_config() -> Config:
         slack_bot_token=bot_token,
         slack_app_token=app_token,
         allowed_user_ids=allowed,
-        model=os.environ.get("MODEL", "claude-opus-5-5"),
+        openrouter_api_key=api_key,
+        model=os.environ.get("MODEL", "anthropic/claude-opus-5-5"),
         data_dir=_resolve(os.environ.get("DATA_DIR", "./data")),
         output_dir=_resolve(os.environ.get("OUTPUT_DIR", "./output")),
         timezone=ZoneInfo(os.environ.get("TIMEZONE", "UTC")),

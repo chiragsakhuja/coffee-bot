@@ -35,7 +35,7 @@ SLASH_COMMAND = "/coffee"
 APPROVAL_TIMEOUT_SECONDS = 300
 SLACK_TEXT_LIMIT = 3900  # Slack truncates long messages; keep chunks well under its 4000-char guidance
 MAX_DOWNLOAD_BYTES = 30_000_000
-MAX_IMAGE_BYTES = 4_500_000  # Anthropic's per-image limit is 5 MB (base64-decoded)
+MAX_IMAGE_BYTES = 4_500_000  # stay under the ~5 MB per-image limit of most providers
 MAX_IMAGE_SIDE = 2000
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 WORKING_REACTION = "hourglass_flowing_sand"
@@ -436,8 +436,8 @@ class CoffeeBot:
             data = await self._download(f)
             data, media_type = _prepare_image(data, mimetype)
             content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode()},
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{base64.b64encode(data).decode()}"},
             })
         text = unescape(strip_mention(event.get("text") or "", self.bot_user_id))
         if text:

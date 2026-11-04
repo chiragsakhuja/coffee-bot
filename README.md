@@ -1,9 +1,9 @@
 # coffee-bot
 
-A Slack bot that keeps a coffee menu on a [TRMNL](https://trmnl.com) OG e-ink display up to date. Send it photos of coffee bags and notes about brew recipes. Claude pulls out the details, updates the menu, and renders an 800×480 grayscale image. The bot also *is* the TRMNL's server: it implements the BYOS device protocol (`/api/setup`, `/api/display`, `/api/log`), so the display pulls the menu directly from it.
+A Slack bot that keeps a coffee menu on a [TRMNL](https://trmnl.com) OG e-ink display up to date. Send it photos of coffee bags and notes about brew recipes. The LLM (via OpenRouter) pulls out the details, updates the menu, and renders an 800×480 grayscale image. The bot also *is* the TRMNL's server: it implements the BYOS device protocol (`/api/setup`, `/api/display`, `/api/log`), so the display pulls the menu directly from it.
 
 ```
- Slack ─────► bot.py ──► agent.py (Claude, tool runner) ──► tools.py
+ Slack ─────► bot.py ──► agent.py (OpenRouter, tool loop) ──► tools.py
  (you)          ▲                                              │
                 │ previews, questions, approve buttons,        ▼
                 │ pairing requests, battery alerts      store.py (data/menu.json)
@@ -63,8 +63,9 @@ Full server setup (Slack app, member IDs, systemd, TRMNL output formats): **[doc
 | `src/coffee_bot/bot.py` | Slack handlers (Socket Mode), allowlist, `/coffee` command, approval buttons, device pairing, nightly re-render; starts the HTTP server |
 | `src/coffee_bot/server.py` | TRMNL BYOS HTTP endpoints (aiohttp) |
 | `src/coffee_bot/devices.py` | Paired devices, telemetry, refresh/night schedule (`data/devices.json`) |
-| `src/coffee_bot/agent.py` | Claude conversation per chat (system prompt, tool runner, history) |
-| `src/coffee_bot/tools.py` | Tools Claude can call: menu edits, preview, sandboxed file I/O, approved shell |
+| `src/coffee_bot/agent.py` | LLM conversation per chat (system prompt, tool loop, history) |
+| `src/coffee_bot/tools.py` | Tools the model can call: menu edits, preview, sandboxed file I/O, approved shell |
+| `src/coffee_bot/llm_tools.py` | `@tool` decorator: builds JSON-schema tool specs from type hints and docstrings |
 | `src/coffee_bot/models.py` | Menu / Coffee / BrewMethod schema |
 | `src/coffee_bot/store.py` | Atomic JSON storage + undo history |
 | `src/coffee_bot/render.py` | HTML → PNG (Playwright) → 2-bit / 1-bit TRMNL images, image cache |

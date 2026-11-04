@@ -1,4 +1,4 @@
-"""Tools Claude can call. Built per turn so they can talk back to the right Slack conversation."""
+"""Tools the model can call. Built per turn so they can talk back to the right Slack conversation."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from datetime import date, datetime
 from typing import Callable, Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from anthropic import beta_async_tool
 from pydantic import ValidationError
 
 from .devices import DeviceRegistry, DeviceSettings, format_status
+from .llm_tools import tool
 from .models import MAX_COFFEES, BrewMethod, Coffee, Menu, now_utc
 from .render import Renderer, RenderResult
 from .sandbox import MAX_FILE_BYTES, Sandbox, run_command
@@ -76,12 +76,12 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
             log.exception("render failed")
             return f"{message} WARNING: saved, but rendering failed: {exc}"
 
-    @beta_async_tool
+    @tool
     async def get_menu() -> str:
         """Return the current menu as JSON, including every coffee's id, details, and brew methods."""
         return svc.store.load().model_dump_json(indent=2)
 
-    @beta_async_tool
+    @tool
     async def add_coffee(
         roaster: str,
         name: str,
@@ -130,7 +130,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
 
         return await mutate(change)
 
-    @beta_async_tool
+    @tool
     async def update_coffee(
         coffee_id: str,
         roaster: str | None = None,
@@ -177,7 +177,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
 
         return await mutate(change)
 
-    @beta_async_tool
+    @tool
     async def remove_coffee(coffee_id: str) -> str:
         """Remove a coffee (and its brew methods) from the menu.
 
@@ -192,7 +192,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
 
         return await mutate(change)
 
-    @beta_async_tool
+    @tool
     async def upsert_brew_method(
         coffee_id: str,
         method: str,
@@ -255,7 +255,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
 
         return await mutate(change)
 
-    @beta_async_tool
+    @tool
     async def remove_brew_method(coffee_id: str, method: str) -> str:
         """Remove a brew method from a coffee.
 
@@ -274,7 +274,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
 
         return await mutate(change)
 
-    @beta_async_tool
+    @tool
     async def set_menu_title(title: str) -> str:
         """Change the title shown at the top of the display.
 
@@ -288,7 +288,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
 
         return await mutate(change)
 
-    @beta_async_tool
+    @tool
     async def render_preview(caption: str | None = None) -> str:
         """Render the display image from the current menu and template, and send it to the user in Slack.
         Call this after changing the menu or the template so the user can see the result.
@@ -303,7 +303,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
         await chat.send_photo(result.preview_png, caption)
         return "Preview rendered and sent to the user."
 
-    @beta_async_tool
+    @tool
     async def list_files(directory: str = "templates") -> str:
         """List files in a directory the bot may read (templates/ or the data directory).
 
@@ -317,7 +317,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
         lines = [f"{svc.sandbox.display(p)}{'/' if p.is_dir() else ''}" for p in entries if "history" not in p.parts[-2:]]
         return "\n".join(lines[:200]) or "(empty)"
 
-    @beta_async_tool
+    @tool
     async def read_file(path: str) -> str:
         """Read a text file from templates/ or the data directory.
 
@@ -331,7 +331,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
             raise ValueError(f"{path!r} is too large to read")
         return target.read_text()
 
-    @beta_async_tool
+    @tool
     async def write_file(path: str, content: str) -> str:
         """Create or overwrite a file under templates/ (the display template and CSS).
         The previous version is backed up. Call render_preview afterwards to check the result.
@@ -349,7 +349,7 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
         atomic_write_bytes(target, content.encode())
         return f"Wrote {svc.sandbox.display(target)} ({len(content)} chars)."
 
-    @beta_async_tool
+    @tool
     async def run_shell_command(command: str, reason: str) -> str:
         """Run a shell command on the server, in the project directory. The user must approve every
         command in Slack before it runs; if they decline, don't retry the same command.
@@ -364,13 +364,13 @@ def build_tools(svc: Services, chat: ChatIO) -> list:
             return "The user declined (or didn't answer in time). The command was not run."
         return await run_command(command, cwd=svc.sandbox.project_root)
 
-    @beta_async_tool
+    @tool
     async def get_device_status() -> str:
         """Status of the TRMNL display(s): last check-in, battery, Wi-Fi signal, firmware, recent device
         logs, and the current refresh schedule."""
         return format_status(svc.devices, svc.tz)
 
-    @beta_async_tool
+    @tool
     async def set_refresh_schedule(
         refresh_minutes: int | None = None,
         night_enabled: bool | None = None,
