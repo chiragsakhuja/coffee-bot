@@ -8,6 +8,7 @@
 </head>
 {#- Available: menu (Menu model), today (date), width/height (800x480). Filters: short_date, num. -#}
 {%- set status_label = {"dialed": "DIALED", "dialing_in": "DIALING IN", "trying": "TRYING"} -%}
+{%- set container_order = {"black": 0, "white": 1, "green": 2, "blue": 3} -%}
 <body>
 <div class="screen" style="width: {{ width }}px; height: {{ height }}px;">
   <header class="topbar">
@@ -22,7 +23,12 @@
   </main>
   {%- else %}
   <main class="grid count-{{ menu.coffees | length }}">
-    {%- for c in menu.coffees %}
+    {%- for c in menu.coffees | sort(attribute="container", case_sensitive=true) | sort(attribute="container", reverse=false) %}{% endfor %}
+    {%- set ordered = [] %}
+    {%- for key in ["black", "white", "green", "blue"] %}
+      {%- for c in menu.coffees if c.container == key %}{% set _ = ordered.append(c) %}{% endfor %}
+    {%- endfor %}
+    {%- for c in ordered %}
     {%- set age = (today - c.roast_date).days %}
     <section class="card">
       <div class="card-head">
